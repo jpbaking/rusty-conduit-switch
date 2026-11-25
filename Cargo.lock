@@ -1449,7 +1449,6 @@ dependencies = [
 name = "rusty-conduit-switch"
 version = "0.0.1-beta.1"
 dependencies = [
- "arc-swap",
  "base64 0.22.1",
  "bytes",
  "clap",

@@ -3,7 +3,7 @@
 //! All hot-reloadable state — the compiled router, the ProfileRegistry of upstream
 //! dialers, the global HostFilter, `connect_timeout`, keepalive, and a
 //! `config_generation` counter — lives in one immutable [`RuntimeConfig`] stored inside an
-//! [`arc_swap::ArcSwap`] ([`SharedRuntime`]). Every accepted connection (and every decrypted MITM
+//! `ArcSwap` ([`SharedRuntime`]). Every accepted connection (and every decrypted MITM
 //! request when URL rules are configured) takes one lock-free snapshot with `load()` and
 //! keeps it for its lifetime, so in-flight tunnels are never disturbed by a reload while new
 //! connections immediately see the new tables.
@@ -40,8 +40,7 @@ use crate::upstream::DialerOptions;
 // setup error now live in `rusty-conduit-engine`; the switch re-exports the aliases so the
 // reload engine keeps referring to `RuntimeConfig` / `SharedRuntime` unchanged.
 use rusty_conduit_engine::routing::RoutingState;
-pub use rusty_conduit_engine::routing::{RuntimeConfig, SharedRuntime};
-use rusty_conduit_engine::server::RoutingSetupError;
+pub use rusty_conduit_engine::routing::{RoutingSetupError, RuntimeConfig, SharedRuntime};
 
 // ---------------------------------------------------------------------------
 // Non-reloadable fields
@@ -239,15 +238,21 @@ impl Reloader {
         let mut active = self.active.lock().unwrap_or_else(|e| e.into_inner());
         match self.prepare(&active) {
             Ok((cfg, runtime, ignored)) => {
-                let generation = self.shared.load().config_generation + 1;
+                let previous = self.shared.load();
+                let generation = previous.config_generation + 1;
+                // Keep the live traffic counters across the swap (the engine starts every
+                // compiled snapshot with fresh ones).
+                let counters = previous.counters.clone();
+                drop(previous);
                 let summary = ReloadSummary {
                     generation,
                     profiles: cfg.profiles_with_builtins().len(),
                     rules: cfg.routing.rule_count(),
                     ignored,
                 };
-                self.shared
-                    .store(Arc::new(runtime.with_generation(generation)));
+                self.shared.store(Arc::new(
+                    runtime.with_generation(generation).with_counters(counters),
+                ));
                 *active = cfg;
                 if !summary.ignored.is_empty() {
                     self.logger.info(format!(
@@ -281,8 +286,9 @@ impl Reloader {
         let merged = Config::merge(self.cli.clone(), Some(file))?;
         let ignored = non_reloadable_changes(active, &merged);
         let cfg = pin_non_reloadable(active, merged);
-        cfg.validate()?;
-        let runtime = RoutingState::from_input(&cfg.routing_input(), self.opts.clone())?;
+        let input = cfg.routing_input();
+        cfg.validate_with(&input)?;
+        let runtime = RoutingState::from_input(&input, self.opts.clone())?;
         Ok((cfg, runtime, ignored))
     }
 
@@ -506,6 +512,25 @@ mod tests {
             "{}",
             cap.text()
         );
+    }
+
+    #[test]
+    fn reload_preserves_traffic_counters() {
+        let (r, path, _cap) = reloader("counters", BASE, &[]);
+        let before = r.shared().load().counters.clone();
+        before.track("rule-a", "corp").finish(10, 20);
+        std::fs::write(&path, BASE.replace("a.example", "b.example")).unwrap();
+        r.reload_once(ReloadTrigger::Manual).unwrap();
+        let after = r.shared().load();
+        assert_eq!(
+            after.counters, before,
+            "reload must share the live counters"
+        );
+        let corp = after
+            .counters
+            .profile("corp")
+            .expect("counted before reload");
+        assert_eq!((corp.hits, corp.bytes_in, corp.bytes_out), (1, 10, 20));
     }
 
     #[test]

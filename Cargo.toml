@@ -20,25 +20,9 @@ rusty-conduit-engine = { path = "../rusty-conduit-engine" }
 # Async runtime & utilities
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util", "time", "sync", "signal", "fs", "io-std"] }
 tokio-util = { version = "0.7", features = ["rt"] }
-bytes = "1"
 
-# HTTP
-hyper = { version = "1", features = ["http1", "http2", "server", "client"] }
-hyper-util = { version = "0.1", features = ["tokio"] }
-http-body-util = "0.1"
-
-# TLS & certificates (pure-Rust stack; `ring` provider, no OpenSSL / aws-lc)
-rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
-tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12", "logging"] }
-rcgen = { version = "0.14", default-features = false, features = ["crypto", "pem", "ring", "x509-parser"] }
-p12-keystore = "0.4"
-x509-parser = "0.18"
-
-# Lock-free hot-reload snapshots.
-arc-swap = "1"
-
-# Rule matching
-# `regex` for host/URL regex rules; `base64` for HTTP `Proxy-Authorization`.
+# AirSwitch / SwitchyOmega import: `regex` validates imported regex conditions, `base64`
+# decodes base64-encoded `.bak` backups.
 regex = "1"
 base64 = "0.22"
 
@@ -52,8 +36,20 @@ serde = { version = "1", features = ["derive"] }
 toml = "1"
 serde_json = "1"
 humantime = "2"
-# `local-offset` provides the local timezone needed for weekday/time routing rules.
-time = { version = "0.3", features = ["formatting", "macros", "local-offset"] }
 
 # Errors
 thiserror = "2"
+
+[dev-dependencies]
+# Integration-test fixtures (origin servers, MITM/TLS clients, CA generation). The engine
+# owns the runtime HTTP/TLS stack; these stay pure-Rust (`ring` provider, no OpenSSL / aws-lc).
+bytes = "1"
+hyper = { version = "1", features = ["http1", "http2", "server", "client"] }
+hyper-util = { version = "0.1", features = ["tokio"] }
+http-body-util = "0.1"
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12", "logging"] }
+rcgen = { version = "0.14", default-features = false, features = ["crypto", "pem", "ring", "x509-parser"] }
+p12-keystore = "0.4"
+x509-parser = "0.18"
+time = { version = "0.3", features = ["formatting", "macros", "local-offset"] }

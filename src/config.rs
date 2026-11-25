@@ -20,9 +20,9 @@ use std::fmt;
 use std::fs;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::{Path, PathBuf};
-use std::str::FromStr;
 use std::time::Duration;
 
+use clap::builder::{PossibleValuesParser, TypedValueParser};
 use clap::parser::ValueSource;
 use clap::{ArgAction, ArgMatches, CommandFactory, FromArgMatches, Parser, Subcommand};
 use serde::Deserialize;
@@ -41,8 +41,10 @@ use rusty_conduit_engine::server::ServerOptions;
 pub use rusty_conduit_engine::mitm::CaSource;
 pub use rusty_conduit_engine::routing::{
     HostLevels, Inbound, OneOrMany, PortSpec, ProfileConfig, ProfileType, RoutingConfig,
-    RoutingError, RoutingInput, RuleConfig, Target,
+    RoutingError, RoutingInput, RoutingTableConfig, RuleConfig, Target,
 };
+// Engine defaults and built-in profile names, shared with the CLI/TOML layer.
+pub use rusty_conduit_engine::routing::{DEFAULT_CONNECT_TIMEOUT, PROFILE_BLOCK, PROFILE_DIRECT};
 
 /// Default bind address.
 pub const DEFAULT_BIND: IpAddr = IpAddr::V4(Ipv4Addr::LOCALHOST);
@@ -50,8 +52,6 @@ pub const DEFAULT_BIND: IpAddr = IpAddr::V4(Ipv4Addr::LOCALHOST);
 pub const DEFAULT_HTTP_PORT: u16 = 3128;
 /// Default SOCKS4/4a/5 proxy port.
 pub const DEFAULT_SOCKS_PORT: u16 = 1080;
-/// Default upstream TCP + proxy handshake timeout per attempt.
-pub const DEFAULT_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 /// Default debounce window for config file change events.
 pub const DEFAULT_WATCH_DEBOUNCE: Duration = Duration::from_millis(300);
 /// Default cap on concurrent client connections (`0` = unlimited).
@@ -66,11 +66,6 @@ pub const DEFAULT_MITM_CERT_CACHE_MAX: usize = 4096;
 pub const MAX_TCP_KEEPALIVE_DURATION: Duration = Duration::from_secs(32_767);
 /// Largest accepted TCP keepalive probe count (Linux caps `TCP_KEEPCNT` at 127).
 pub const MAX_TCP_KEEPALIVE_RETRIES: u32 = 127;
-
-/// Name of the built-in direct-connection profile.
-pub const PROFILE_DIRECT: &str = "direct";
-/// Name of the built-in reject-everything profile.
-pub const PROFILE_BLOCK: &str = "block";
 
 /// Errors raised while loading or validating configuration. Every variant is `FATAL` at
 /// startup (and rejects the candidate configuration on hot-reload).
@@ -100,12 +95,6 @@ pub enum ConfigError {
     ConflictingPassphrase,
     #[error("--mitm-cert-ttl must be at least 10s (got {})", humantime::format_duration(*.0))]
     CertTtlTooShort(Duration),
-    #[error("failed to read passphrase file {path}: {source}")]
-    ReadPassphraseFile {
-        path: PathBuf,
-        #[source]
-        source: std::io::Error,
-    },
     #[error("invalid TCP keepalive setting: {0}")]
     InvalidKeepalive(String),
     #[error("conflicting destination filter: cannot set both allowlist and blocklist")]
@@ -178,7 +167,12 @@ pub enum Command {
     /// Dry-run the routing decision for a target and print it
     TestRoute {
         /// Inbound protocol to evaluate the routing table for
-        #[arg(long, value_parser = |s: &str| Inbound::from_str(s).map_err(|e| e.to_string()), default_value_t = Inbound::Http)]
+        #[arg(
+            long,
+            value_parser = PossibleValuesParser::new(["http", "socks"])
+                .map(|s| s.parse::<Inbound>().expect("restricted to the possible values")),
+            default_value_t = Inbound::Http
+        )]
         inbound: Inbound,
         /// Target as HOST[:PORT] or a full URL
         #[arg(value_name = "HOST[:PORT] | URL")]
@@ -533,8 +527,6 @@ impl FileConfig {
 // Merged configuration
 // ---------------------------------------------------------------------------
 
-/// Where the MITM CA comes from (only present when MITM mode is ON). Re-exported from
-/// `rusty-conduit-engine::mitm::CaSource`.
 /// Fully merged configuration.
 #[derive(Clone, PartialEq, Eq)]
 pub struct Config {
@@ -757,6 +749,12 @@ impl Config {
 
     /// Apply the `FATAL` startup validation rules (also used to reject a hot-reload).
     pub fn validate(&self) -> Result<(), ConfigError> {
+        self.validate_with(&self.routing_input())
+    }
+
+    /// [`Self::validate`] against an already-built [`Self::routing_input`], so callers that
+    /// also compile it (hot-reload) build it only once.
+    pub fn validate_with(&self, input: &RoutingInput) -> Result<(), ConfigError> {
         if self.http_port == 0 && self.socks_port == 0 {
             return Err(ConfigError::NoListeners);
         }
@@ -784,8 +782,7 @@ impl Config {
         // against the active listeners, and every rule/bypass/composite profile) is validated by
         // the engine exactly as it is compiled, so delegate there and map its errors onto
         // `ConfigError` with identical messages.
-        self.routing_input().validate().map_err(ConfigError::from)?;
-        Ok(())
+        input.validate().map_err(ConfigError::from)
     }
 
     /// Everything the engine needs to validate and compile the routing model, built from this
@@ -938,25 +935,6 @@ impl Config {
         self.socks_block_web_in_mitm && !self.mitm_enabled()
     }
 
-    /// Resolve the CA passphrase from the inline value or the passphrase file
-    /// (trailing `\n` / `\r\n` trimmed).
-    pub fn resolve_passphrase(&self) -> Result<Option<String>, ConfigError> {
-        if let Some(p) = &self.mitm_ca_passphrase {
-            return Ok(Some(p.clone()));
-        }
-        match &self.mitm_ca_passphrase_file {
-            Some(path) => {
-                let text =
-                    fs::read_to_string(path).map_err(|source| ConfigError::ReadPassphraseFile {
-                        path: path.clone(),
-                        source,
-                    })?;
-                Ok(Some(trim_newline(&text).to_string()))
-            }
-            None => Ok(None),
-        }
-    }
-
     /// Startup `INFO` notices (security and configuration hints), in display order.
     pub fn notices(&self) -> Vec<String> {
         let mut out = Vec::new();
@@ -1054,12 +1032,6 @@ impl Config {
             path(&self.config_path),
         )
     }
-}
-
-fn trim_newline(text: &str) -> &str {
-    text.strip_suffix("\r\n")
-        .or_else(|| text.strip_suffix('\n'))
-        .unwrap_or(text)
 }
 
 fn file_duration(key: &'static str, raw: Option<&str>) -> Result<Option<Duration>, ConfigError> {
@@ -1645,6 +1617,11 @@ target = "direct"
         assert_eq!(p.resolve_password("p").unwrap().as_deref(), Some("inline"));
         assert!(!format!("{p:?}").contains("inline"), "Debug must redact");
         p.password = None;
+        p.password_env = Some("RCS_TEST_CORP_PASS".into());
+        assert_eq!(
+            p.resolve_password("p").unwrap().as_deref(),
+            Some("from-env")
+        );
         p.password_env = Some("RCS_TEST_MISSING".into());
         assert!(matches!(
             p.resolve_password("p"),
