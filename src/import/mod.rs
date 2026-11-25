@@ -371,7 +371,7 @@ mod tests {
             ..Config::default()
         };
         cfg.validate().unwrap();
-        crate::router::Router::from_config(&cfg).unwrap();
+        crate::router::Router::from_input(&cfg.routing_input()).unwrap();
         assert_eq!(cfg.routing.rules.len(), 2);
         assert_eq!(
             cfg.profiles["work_proxy"].password.as_deref(),

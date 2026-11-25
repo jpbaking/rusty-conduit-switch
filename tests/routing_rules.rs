@@ -27,7 +27,7 @@ fn config(text: &str) -> Config {
 fn router(text: &str) -> Router {
     let cfg = config(text);
     cfg.validate().unwrap();
-    Router::from_config(&cfg).unwrap()
+    Router::from_input(&cfg.routing_input()).unwrap()
 }
 
 /// Monday 12:00 local.
@@ -729,7 +729,7 @@ fn validation_rejects_bad_configs() {
     // The router-level error type is available for hot-reload callers.
     let cfg = config("[profiles.x]\ntype = \"composite\"\nhttp_proxy = \"x\"\n");
     assert!(matches!(
-        Router::from_config(&cfg),
+        Router::from_input(&cfg.routing_input()),
         Err(RouterError::CompositeCycle { .. })
     ));
 }

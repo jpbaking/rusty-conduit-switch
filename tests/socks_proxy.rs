@@ -306,7 +306,7 @@ impl Proxy {
         )
         .await
         .unwrap();
-        let routing = RoutingState::from_config(&cfg, DialerOptions::default())
+        let routing = RoutingState::from_input(&cfg.routing_input(), DialerOptions::default())
             .unwrap()
             .with_connect_timeout(Duration::from_secs(3))
             .shared();

@@ -1,9 +1,9 @@
 //! Atomic hot-reload engine.
 //!
-//! All hot-reloadable state — the compiled [`Router`], the [`ProfileRegistry`] of upstream
-//! dialers, the global [`HostFilter`], `connect_timeout`, [`KeepaliveSettings`], and a
+//! All hot-reloadable state — the compiled router, the ProfileRegistry of upstream
+//! dialers, the global HostFilter, `connect_timeout`, keepalive, and a
 //! `config_generation` counter — lives in one immutable [`RuntimeConfig`] stored inside an
-//! [`ArcSwap`] ([`SharedRuntime`]). Every accepted connection (and every decrypted MITM
+//! [`arc_swap::ArcSwap`] ([`SharedRuntime`]). Every accepted connection (and every decrypted MITM
 //! request when URL rules are configured) takes one lock-free snapshot with `load()` and
 //! keeps it for its lifetime, so in-flight tunnels are never disturbed by a reload while new
 //! connections immediately see the new tables.
@@ -22,199 +22,26 @@
 //! the previous snapshot stays active; on success the new snapshot is stored atomically with
 //! `config_generation + 1`.
 
-use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::fmt;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use arc_swap::ArcSwap;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
-use crate::config::{CliInput, Config, ConfigError, FileConfig, ProfileConfig, ProfileType};
-use crate::filter::HostFilter;
+use crate::config::{CliInput, Config, ConfigError, FileConfig};
 use crate::logging::Logger;
-use crate::net::KeepaliveSettings;
-use crate::router::{RouteDecision, Router, RouterError};
-use crate::upstream::{
-    DialerOptions, HttpConnectDialer, ProfileRegistry, TlsOptions, UpstreamError,
-};
+use crate::upstream::DialerOptions;
 
-/// Errors raised while compiling the routing / upstream state from configuration.
-#[derive(Debug, thiserror::Error)]
-pub enum RoutingSetupError {
-    #[error(transparent)]
-    Router(#[from] RouterError),
-    #[error(transparent)]
-    Upstream(#[from] UpstreamError),
-}
-
-/// One immutable snapshot of everything needed to route and dial a request: the compiled
-/// [`Router`], the [`ProfileRegistry`] of tunnel dialers, the `http` / `https` proxy
-/// profiles usable for absolute-form plain HTTP forwarding, the global destination filter,
-/// timeouts, keepalive, and the generation that produced it. Cheap to clone.
-#[derive(Clone)]
-pub struct RuntimeConfig {
-    pub router: Arc<Router>,
-    pub registry: Arc<ProfileRegistry>,
-    /// `http` / `https` profiles by name, for absolute-form plain HTTP forwarding.
-    pub forward_proxies: Arc<BTreeMap<String, HttpConnectDialer>>,
-    /// Per-attempt upstream connect timeout.
-    pub connect_timeout: Duration,
-    /// TCP keepalive for accepted client sockets and upstream sockets (`None` = disabled).
-    pub keepalive: Option<KeepaliveSettings>,
-    /// Global destination filter (also compiled into the router and `direct` dialers).
-    pub filter: Option<Arc<HostFilter>>,
-    /// `0` for the startup configuration, incremented by every successful reload.
-    pub config_generation: u64,
-}
-
-impl fmt::Debug for RuntimeConfig {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("RuntimeConfig")
-            .field("config_generation", &self.config_generation)
-            .field("registry", &self.registry)
-            .field(
-                "forward_proxies",
-                &self.forward_proxies.keys().collect::<Vec<_>>(),
-            )
-            .field("connect_timeout", &self.connect_timeout)
-            .field("keepalive", &self.keepalive)
-            .field("filter", &self.filter)
-            .finish_non_exhaustive()
-    }
-}
-
-/// Runtime state shared by the listeners and every protocol engine; swapped atomically on
-/// reload.
-pub type SharedRuntime = Arc<ArcSwap<RuntimeConfig>>;
-
-impl RuntimeConfig {
-    /// A state with no absolute-form forward proxies, the default connect timeout, default
-    /// keepalive, and no filter.
-    pub fn new(router: Router, registry: ProfileRegistry) -> Self {
-        Self {
-            router: Arc::new(router),
-            registry: Arc::new(registry),
-            forward_proxies: Arc::new(BTreeMap::new()),
-            connect_timeout: crate::config::DEFAULT_CONNECT_TIMEOUT,
-            keepalive: Some(KeepaliveSettings::DEFAULT),
-            filter: None,
-            config_generation: 0,
-        }
-    }
-
-    /// Compile the router and every upstream dialer from validated configuration. The
-    /// global destination filter (if any) is enforced by the router on the target name and
-    /// by `direct` dials on every resolved IP.
-    pub fn from_config(cfg: &Config, opts: DialerOptions) -> Result<Self, RoutingSetupError> {
-        let router = Router::from_config(cfg)?;
-        let opts = DialerOptions {
-            keepalive: cfg.tcp_keepalive_settings(),
-            filter: opts.filter.or_else(|| cfg.host_filter().map(Arc::new)),
-            ..opts
-        };
-        let profiles = cfg.profiles_with_builtins();
-        let registry = ProfileRegistry::from_profiles(&profiles, &opts)?;
-        let mut forward = BTreeMap::new();
-        for (name, profile) in &profiles {
-            if let Some(d) = forward_proxy_for_profile(name, profile, &opts)? {
-                forward.insert(name.clone(), d);
-            }
-        }
-        Ok(Self {
-            router: Arc::new(router),
-            registry: Arc::new(registry),
-            forward_proxies: Arc::new(forward),
-            connect_timeout: cfg.connect_timeout,
-            keepalive: opts.keepalive,
-            filter: opts.filter,
-            config_generation: 0,
-        })
-    }
-
-    /// Register `dialer` as the absolute-form forward proxy for profile `name`.
-    pub fn with_forward_proxy(
-        mut self,
-        name: impl Into<String>,
-        dialer: HttpConnectDialer,
-    ) -> Self {
-        Arc::make_mut(&mut self.forward_proxies).insert(name.into(), dialer);
-        self
-    }
-
-    /// Override the per-attempt upstream connect timeout.
-    pub fn with_connect_timeout(mut self, timeout: Duration) -> Self {
-        self.connect_timeout = timeout;
-        self
-    }
-
-    /// Set the generation number of this snapshot.
-    pub fn with_generation(mut self, generation: u64) -> Self {
-        self.config_generation = generation;
-        self
-    }
-
-    /// Wrap into a [`SharedRuntime`] handle.
-    pub fn shared(self) -> SharedRuntime {
-        Arc::new(ArcSwap::from_pointee(self))
-    }
-
-    /// Redacted upstream of the first target of `decision` (for logs when every dial
-    /// failed or the route was refused).
-    pub fn first_upstream(&self, decision: &RouteDecision) -> String {
-        decision
-            .targets
-            .first()
-            .and_then(|t| self.registry.get(&t.profile))
-            .map(|d| d.redacted_upstream())
-            .unwrap_or_default()
-    }
-}
-
-/// Build the absolute-form forward proxy dialer for an `http` / `https` profile (`None` for
-/// every other type). Mirrors [`crate::upstream::dialer_for_profile`].
-fn forward_proxy_for_profile(
-    name: &str,
-    profile: &ProfileConfig,
-    opts: &DialerOptions,
-) -> Result<Option<HttpConnectDialer>, UpstreamError> {
-    if !matches!(profile.kind, ProfileType::Http | ProfileType::Https) {
-        return Ok(None);
-    }
-    let (Some(host), Some(port)) = (&profile.host, profile.port) else {
-        return Err(UpstreamError::Profile {
-            profile: name.to_string(),
-            message: format!("type `{}` requires host and port", profile.kind),
-        });
-    };
-    let password = profile.resolve_password(name)?;
-    let credentials = match (&profile.username, password) {
-        (Some(u), p) => Some((u.clone(), p.unwrap_or_default())),
-        (None, Some(p)) => Some((String::new(), p)),
-        (None, None) => None,
-    };
-    let dialer = if profile.kind == ProfileType::Https {
-        let tls = TlsOptions {
-            insecure_skip_verify: profile.tls_insecure_skip_verify,
-            roots: opts.tls_roots.clone(),
-        };
-        HttpConnectDialer::https(host.clone(), port, &tls).map_err(|e| UpstreamError::Profile {
-            profile: name.to_string(),
-            message: format!("TLS setup failed: {e}"),
-        })?
-    } else {
-        HttpConnectDialer::http(host.clone(), port)
-    };
-    Ok(Some(
-        dialer
-            .with_credentials(credentials)
-            .with_tcp_keepalive(opts.keepalive),
-    ))
-}
+// E2: the routing/upstream snapshot type (`RuntimeConfig` == engine `RoutingState`) and its
+// setup error now live in `rusty-conduit-engine`; the switch re-exports the aliases so the
+// reload engine keeps referring to `RuntimeConfig` / `SharedRuntime` unchanged.
+use rusty_conduit_engine::routing::RoutingState;
+pub use rusty_conduit_engine::routing::{RuntimeConfig, SharedRuntime};
+use rusty_conduit_engine::server::RoutingSetupError;
 
 // ---------------------------------------------------------------------------
 // Non-reloadable fields
@@ -455,7 +282,7 @@ impl Reloader {
         let ignored = non_reloadable_changes(active, &merged);
         let cfg = pin_non_reloadable(active, merged);
         cfg.validate()?;
-        let runtime = RuntimeConfig::from_config(&cfg, self.opts.clone())?;
+        let runtime = RoutingState::from_input(&cfg.routing_input(), self.opts.clone())?;
         Ok((cfg, runtime, ignored))
     }
 
@@ -631,7 +458,7 @@ mod tests {
         };
         let cfg = Config::from_cli(cli.clone()).unwrap();
         cfg.validate().unwrap();
-        let shared = RuntimeConfig::from_config(&cfg, DialerOptions::default())
+        let shared = RoutingState::from_input(&cfg.routing_input(), DialerOptions::default())
             .unwrap()
             .shared();
         let cap = Captured::default();
@@ -803,7 +630,7 @@ mod tests {
     #[tokio::test]
     async fn watcher_requires_config_path() {
         let cfg = Config::default();
-        let shared = RuntimeConfig::from_config(&cfg, DialerOptions::default())
+        let shared = RoutingState::from_input(&cfg.routing_input(), DialerOptions::default())
             .unwrap()
             .shared();
         let r = Arc::new(Reloader::new(

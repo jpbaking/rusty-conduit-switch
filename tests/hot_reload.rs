@@ -164,7 +164,7 @@ impl Proxy {
         )
         .await
         .unwrap();
-        let runtime = RuntimeConfig::from_config(&cfg, DialerOptions::default())
+        let runtime = RuntimeConfig::from_input(&cfg.routing_input(), DialerOptions::default())
             .unwrap()
             .shared();
         let handlers =

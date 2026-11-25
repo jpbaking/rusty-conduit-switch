@@ -15,18 +15,18 @@
 //! commented TOML config ([`import`]).
 
 pub mod config;
-pub mod filter;
-pub mod http;
 pub mod import;
-pub mod logging;
-pub mod mitm;
-pub mod mux;
-pub mod net;
 pub mod reload;
-pub mod router;
-pub mod server;
-pub mod socks;
-pub mod upstream;
+
+// Extracted proxy engine (E1b): the routing/profile model and compiled snapshots
+// ([`routing`]), rule matching ([`router`]), upstream dialers ([`upstream`]), the
+// HTTP/HTTPS ([`http`]) and SOCKS4/4a/5 ([`socks`]) engines, HTTPS MITM ([`mitm`]),
+// listeners and multiplexing ([`server`], [`mux`]), destination filtering ([`filter`]),
+// socket helpers ([`net`]), and logging ([`logging`]) now live in `rusty-conduit-engine`
+// and are re-exported here so the integration tests keep using `rusty_conduit_switch::...`.
+pub use rusty_conduit_engine::{
+    filter, http, logging, mitm, mux, net, router, routing, server, socks, upstream,
+};
 
 use std::io::Write;
 use std::process::ExitCode;
@@ -69,7 +69,7 @@ pub fn log_startup(cfg: &Config, logger: &Logger) {
 /// Configuration notices followed by routing notices (URL rules on opaque tunnels).
 pub fn all_notices(cfg: &Config) -> Vec<String> {
     let mut out = cfg.notices();
-    if let Ok(router) = Router::from_config(cfg) {
+    if let Ok(router) = Router::from_input(&cfg.routing_input()) {
         out.extend_from_slice(router.notices());
     }
     out
@@ -101,7 +101,7 @@ pub async fn run(cfg: Config, cli: CliInput, logger: Logger) -> ExitCode {
     };
 
     let dialer_opts = upstream::DialerOptions::default();
-    let routing = match RoutingState::from_config(&cfg, dialer_opts.clone()) {
+    let routing = match RoutingState::from_input(&cfg.routing_input(), dialer_opts.clone()) {
         Ok(r) => r.shared(),
         Err(e) => {
             logger.fatal(format!("config invalid: {e}"));
@@ -110,7 +110,7 @@ pub async fn run(cfg: Config, cli: CliInput, logger: Logger) -> ExitCode {
             return ExitCode::from(EXIT_FATAL);
         }
     };
-    let mitm_state = match mitm::MitmState::from_config(&cfg) {
+    let mitm_state = match mitm::MitmState::from_options(&cfg.mitm_options()) {
         Ok(m) => m,
         Err(e) => {
             logger.fatal(format!("MITM setup failed: {e}"));
@@ -135,7 +135,7 @@ pub async fn run(cfg: Config, cli: CliInput, logger: Logger) -> ExitCode {
         engines = engines.with_mitm(Arc::new(m.interceptor.clone()), cfg.socks_block_web_in_mitm);
     }
     let handlers: Arc<dyn ProtocolHandlers> = Arc::new(engines);
-    let server = match Server::from_config(&cfg, handlers, logger.clone()).await {
+    let server = match Server::from_options(&cfg.server_options(), handlers, logger.clone()).await {
         Ok(s) => s.with_runtime(Arc::clone(&routing)),
         Err(e) => {
             logger.fatal(e);
@@ -319,7 +319,7 @@ pub fn cmd_test_route(
             return EXIT_FATAL;
         }
     };
-    let router = match Router::from_config(&cfg) {
+    let router = match Router::from_input(&cfg.routing_input()) {
         Ok(r) => r,
         Err(e) => {
             let _ = writeln!(err, "config invalid: {e}");

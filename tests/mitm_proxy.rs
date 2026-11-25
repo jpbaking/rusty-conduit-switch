@@ -405,7 +405,13 @@ impl MitmProxy {
         let mut roots = RootCertStore::empty();
         roots.add(origin_ca.clone()).unwrap();
         let upstream = client_config_with_roots(Arc::clone(&provider), roots).unwrap();
-        let state = MitmState::build(&cfg, &cfg.ca_source().unwrap(), provider, upstream).unwrap();
+        let state = MitmState::build(
+            &cfg.mitm_options(),
+            &cfg.ca_source().unwrap(),
+            provider,
+            upstream,
+        )
+        .unwrap();
 
         let (http_log, socks_log) = (dir.join("access.log"), dir.join("socks.log"));
         let logger = quiet_logger();
@@ -420,7 +426,7 @@ impl MitmProxy {
         )
         .await
         .unwrap();
-        let routing = RoutingState::from_config(&cfg, DialerOptions::default())
+        let routing = RoutingState::from_input(&cfg.routing_input(), DialerOptions::default())
             .unwrap()
             .with_connect_timeout(Duration::from_secs(3))
             .shared();

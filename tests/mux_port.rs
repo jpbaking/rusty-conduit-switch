@@ -190,7 +190,7 @@ async fn wait_lines(access: &AccessLogger, path: &Path, n: usize) -> Vec<String>
 }
 
 fn engines(cfg: &Config, access: &AccessLogger) -> Arc<EngineHandlers> {
-    let routing = RoutingState::from_config(cfg, DialerOptions::default())
+    let routing = RoutingState::from_input(&cfg.routing_input(), DialerOptions::default())
         .unwrap()
         .shared();
     Arc::new(EngineHandlers::from_routing(
@@ -404,9 +404,13 @@ async fn equal_config_ports_enable_mux_and_zero_disables_a_listener() {
     let listen = format!("bind = \"127.0.0.1\"\nhttp_port = {port}\nsocks_port = {port}\n");
     let cfg = config(&routing_toml(&listen, corp));
     assert!(cfg.is_multiplexed());
-    let server = Server::from_config(&cfg, engines(&cfg, &access), quiet_logger())
-        .await
-        .unwrap();
+    let server = Server::from_options(
+        &cfg.server_options(),
+        engines(&cfg, &access),
+        quiet_logger(),
+    )
+    .await
+    .unwrap();
     assert_eq!(server.listeners().len(), 1);
     assert_eq!(server.listeners()[0].0, ListenerRole::Multiplexed);
     let addr = server.local_http_addr().unwrap();
@@ -427,15 +431,19 @@ async fn equal_config_ports_enable_mux_and_zero_disables_a_listener() {
     let listen = format!("bind = \"127.0.0.1\"\nhttp_port = {port}\nsocks_port = 0\n");
     let cfg = config(&routing_toml(&listen, corp));
     assert_eq!(
-        ListenPlan::from_config(&cfg),
+        ListenPlan::from_options(&cfg.server_options()),
         ListenPlan::Separate {
             http: Some(SocketAddr::from(([127, 0, 0, 1], port))),
             socks: None,
         }
     );
-    let server = Server::from_config(&cfg, engines(&cfg, &access), quiet_logger())
-        .await
-        .unwrap();
+    let server = Server::from_options(
+        &cfg.server_options(),
+        engines(&cfg, &access),
+        quiet_logger(),
+    )
+    .await
+    .unwrap();
     assert_eq!(server.listeners().len(), 1);
     assert_eq!(server.local_socks_addr(), None);
     let http = server.local_http_addr().unwrap();
@@ -454,9 +462,13 @@ async fn equal_config_ports_enable_mux_and_zero_disables_a_listener() {
     let port = free_port().await;
     let listen = format!("bind = \"127.0.0.1\"\nhttp_port = 0\nsocks_port = {port}\n");
     let cfg = config(&routing_toml(&listen, corp));
-    let server = Server::from_config(&cfg, engines(&cfg, &access), quiet_logger())
-        .await
-        .unwrap();
+    let server = Server::from_options(
+        &cfg.server_options(),
+        engines(&cfg, &access),
+        quiet_logger(),
+    )
+    .await
+    .unwrap();
     assert_eq!(server.listeners().len(), 1);
     assert_eq!(server.local_http_addr(), None);
     let socks = server.local_socks_addr().unwrap();

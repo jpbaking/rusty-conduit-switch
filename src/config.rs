@@ -18,17 +18,31 @@ use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::fmt;
 use std::fs;
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::{Path, PathBuf};
+use std::str::FromStr;
 use std::time::Duration;
 
 use clap::parser::ValueSource;
-use clap::{ArgAction, ArgMatches, CommandFactory, FromArgMatches, Parser, Subcommand, ValueEnum};
+use clap::{ArgAction, ArgMatches, CommandFactory, FromArgMatches, Parser, Subcommand};
 use serde::Deserialize;
 
 use crate::filter::{FilterRule, HostFilter};
 use crate::logging::{LogFormat, LogLevel};
 use crate::net::KeepaliveSettings;
+use rusty_conduit_engine::mitm::MitmOptions;
+use rusty_conduit_engine::server::ServerOptions;
+
+// E1b: the routing/profile model, the MITM CA source, and the routing-model errors
+// now live in `rusty-conduit-engine` and are re-exported here so the CLI/TOML layer and the
+// integration tests keep referring to them as `crate::config::...`. The switch keeps its own
+// [`ConfigError`] (config-level checks) but maps the engine's `RoutingError` onto it 1:1 so the
+// reported strings are unchanged.
+pub use rusty_conduit_engine::mitm::CaSource;
+pub use rusty_conduit_engine::routing::{
+    HostLevels, Inbound, OneOrMany, PortSpec, ProfileConfig, ProfileType, RoutingConfig,
+    RoutingError, RoutingInput, RuleConfig, Target,
+};
 
 /// Default bind address.
 pub const DEFAULT_BIND: IpAddr = IpAddr::V4(Ipv4Addr::LOCALHOST);
@@ -118,29 +132,43 @@ pub enum ConfigError {
     #[error("the `{0}` subcommand requires --config <PATH>")]
     MissingConfig(&'static str),
     #[error("invalid routing configuration: {0}")]
-    Routing(#[from] crate::router::RouterError),
+    Routing(#[from] rusty_conduit_engine::router::RouterError),
+}
+
+/// Map the engine's routing-model errors onto [`ConfigError`] with identical `Display` strings,
+/// so delegating validation to `RoutingInput::validate()` reports exactly the same messages as
+/// the switch's own checks did.
+impl From<rusty_conduit_engine::routing::RoutingError> for ConfigError {
+    fn from(err: rusty_conduit_engine::routing::RoutingError) -> Self {
+        match err {
+            rusty_conduit_engine::routing::RoutingError::InvalidProfile { profile, message } => {
+                ConfigError::InvalidProfile { profile, message }
+            }
+            rusty_conduit_engine::routing::RoutingError::AmbiguousPassword { profile } => {
+                ConfigError::AmbiguousPassword { profile }
+            }
+            rusty_conduit_engine::routing::RoutingError::ResolvePassword { profile, message } => {
+                ConfigError::ResolvePassword { profile, message }
+            }
+            rusty_conduit_engine::routing::RoutingError::UnknownProfile { location, target } => {
+                ConfigError::UnknownProfile { location, target }
+            }
+            rusty_conduit_engine::routing::RoutingError::EmptyTarget { location } => {
+                ConfigError::EmptyTarget { location }
+            }
+            rusty_conduit_engine::routing::RoutingError::SelfLoop { profile, listener } => {
+                ConfigError::SelfLoop { profile, listener }
+            }
+            rusty_conduit_engine::routing::RoutingError::Routing(source) => {
+                ConfigError::Routing(source)
+            }
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
 // Command line
 // ---------------------------------------------------------------------------
-
-/// Inbound protocol family (`inbound = "http" | "socks"` rule matcher, `test-route --inbound`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize, ValueEnum)]
-#[serde(rename_all = "lowercase")]
-pub enum Inbound {
-    Http,
-    Socks,
-}
-
-impl fmt::Display for Inbound {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(match self {
-            Self::Http => "http",
-            Self::Socks => "socks",
-        })
-    }
-}
 
 /// Subcommands. Without one, the proxy server runs.
 #[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
@@ -150,7 +178,7 @@ pub enum Command {
     /// Dry-run the routing decision for a target and print it
     TestRoute {
         /// Inbound protocol to evaluate the routing table for
-        #[arg(long, value_enum, default_value_t = Inbound::Http)]
+        #[arg(long, value_parser = |s: &str| Inbound::from_str(s).map_err(|e| e.to_string()), default_value_t = Inbound::Http)]
         inbound: Inbound,
         /// Target as HOST[:PORT] or a full URL
         #[arg(value_name = "HOST[:PORT] | URL")]
@@ -409,310 +437,10 @@ impl CliInput {
 // TOML file layout
 // ---------------------------------------------------------------------------
 
-/// A TOML value that may be written as a single item or as a list (`"a"` or `["a", "b"]`).
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
-#[serde(untagged)]
-pub enum OneOrMany<T> {
-    One(T),
-    Many(Vec<T>),
-}
-
-impl<T> OneOrMany<T> {
-    /// All values as a slice (one element for the single form).
-    pub fn as_slice(&self) -> &[T] {
-        match self {
-            Self::One(v) => std::slice::from_ref(v),
-            Self::Many(v) => v,
-        }
-    }
-}
-
-/// A routing target: one profile name (`"corp"`) or an ordered failover chain
-/// (`["corp", "backup", "direct"]`).
-pub type Target = OneOrMany<String>;
-
-/// One `port` matcher entry: a number (`443`) or an inclusive range string (`"8000-8080"`).
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
-#[serde(untagged)]
-pub enum PortSpec {
-    Port(u16),
-    Range(String),
-}
-
-/// `host_levels = { min = M, max = N }` matcher.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct HostLevels {
-    pub min: Option<u32>,
-    pub max: Option<u32>,
-}
-
-/// One `[[routing.rules]]` entry, as written in the file. Matching semantics live in the
-/// router; here every field is only parsed.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct RuleConfig {
-    pub name: Option<String>,
-    pub inbound: Option<Inbound>,
-    pub host: Option<OneOrMany<String>>,
-    pub host_wildcard: Option<OneOrMany<String>>,
-    pub host_regex: Option<OneOrMany<String>>,
-    pub cidr: Option<OneOrMany<String>>,
-    pub ip: Option<OneOrMany<String>>,
-    pub port: Option<OneOrMany<PortSpec>>,
-    pub host_levels: Option<HostLevels>,
-    pub bypass: Option<OneOrMany<String>>,
-    pub weekday: Option<OneOrMany<String>>,
-    pub time: Option<OneOrMany<String>>,
-    pub url_wildcard: Option<OneOrMany<String>>,
-    pub url_regex: Option<OneOrMany<String>>,
-    pub keyword: Option<OneOrMany<String>>,
-    /// Matches unconditionally (AirSwitch `TrueCondition`).
-    #[serde(default)]
-    pub match_all: bool,
-    /// Skips the rule (AirSwitch `FalseCondition`).
-    #[serde(default)]
-    pub disabled: bool,
-    /// Per-rule override of `[routing].resolve_dns`.
-    pub resolve_dns: Option<bool>,
-    pub target: Target,
-}
-
-/// `[routing.http]` / `[routing.socks]` split override table.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct RoutingTableConfig {
-    /// Fallback when no rule matches (if absent: `[routing].default` when `inherit`, else `direct`).
-    pub default: Option<Target>,
-    /// Fall back to the unified `[routing]` table when no override rule matches.
-    #[serde(default)]
-    pub inherit: bool,
-    #[serde(default)]
-    pub rules: Vec<RuleConfig>,
-}
-
-/// Unified `[routing]` table plus optional split overrides.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct RoutingConfig {
-    #[serde(default = "default_target")]
-    pub default: Target,
-    /// Match hostnames against IP/CIDR rules via local DNS (off by default: no DNS leaks).
-    #[serde(default)]
-    pub resolve_dns: bool,
-    #[serde(default)]
-    pub rules: Vec<RuleConfig>,
-    pub http: Option<RoutingTableConfig>,
-    pub socks: Option<RoutingTableConfig>,
-}
-
-fn default_target() -> Target {
-    OneOrMany::One(PROFILE_DIRECT.to_string())
-}
-
-impl Default for RoutingConfig {
-    fn default() -> Self {
-        Self {
-            default: default_target(),
-            resolve_dns: false,
-            rules: Vec::new(),
-            http: None,
-            socks: None,
-        }
-    }
-}
-
-impl RoutingConfig {
-    /// Total number of rules across the unified and split tables.
-    pub fn rule_count(&self) -> usize {
-        self.rules.len()
-            + self.http.as_ref().map_or(0, |t| t.rules.len())
-            + self.socks.as_ref().map_or(0, |t| t.rules.len())
-    }
-
-    /// The default target of the table used for `inbound` traffic (no rule evaluation).
-    pub fn default_for(&self, inbound: Inbound) -> &Target {
-        let split = match inbound {
-            Inbound::Http => self.http.as_ref(),
-            Inbound::Socks => self.socks.as_ref(),
-        };
-        match split {
-            Some(t) => match (&t.default, t.inherit) {
-                (Some(d), _) => d,
-                (None, true) => &self.default,
-                (None, false) => {
-                    static DIRECT: std::sync::OnceLock<Target> = std::sync::OnceLock::new();
-                    DIRECT.get_or_init(default_target)
-                }
-            },
-            None => &self.default,
-        }
-    }
-}
-
-/// Upstream profile type.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum ProfileType {
-    Direct,
-    Block,
-    Http,
-    Https,
-    Socks4a,
-    Socks5,
-    /// Per-scheme proxy selection (AirSwitch `FixedProfile`); `fixed` is accepted as an alias.
-    #[serde(alias = "fixed")]
-    Composite,
-}
-
-impl ProfileType {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Direct => "direct",
-            Self::Block => "block",
-            Self::Http => "http",
-            Self::Https => "https",
-            Self::Socks4a => "socks4a",
-            Self::Socks5 => "socks5",
-            Self::Composite => "composite",
-        }
-    }
-
-    /// Whether this type dials a remote proxy at `host:port`.
-    pub fn is_proxy(self) -> bool {
-        matches!(
-            self,
-            Self::Http | Self::Https | Self::Socks4a | Self::Socks5
-        )
-    }
-}
-
-impl fmt::Display for ProfileType {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(self.as_str())
-    }
-}
-
-/// One `[profiles.<name>]` table.
-#[derive(Clone, PartialEq, Eq, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct ProfileConfig {
-    #[serde(rename = "type")]
-    pub kind: ProfileType,
-    pub host: Option<String>,
-    pub port: Option<u16>,
-    pub username: Option<String>,
-    pub password: Option<String>,
-    pub password_env: Option<String>,
-    pub password_file: Option<PathBuf>,
-    /// Targets matching this list go `direct` instead (AirSwitch `bypassList`).
-    #[serde(default)]
-    pub bypass: Vec<String>,
-    /// `https` only: skip upstream proxy certificate verification (default false).
-    #[serde(default)]
-    pub tls_insecure_skip_verify: bool,
-    /// `composite` only: profile used for `http://` traffic.
-    pub http_proxy: Option<String>,
-    /// `composite` only: profile used for `https://` traffic.
-    pub https_proxy: Option<String>,
-    /// `composite` only: profile used for everything else.
-    pub fallback_proxy: Option<String>,
-}
-
-impl fmt::Debug for ProfileConfig {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("ProfileConfig")
-            .field("kind", &self.kind)
-            .field("host", &self.host)
-            .field("port", &self.port)
-            .field("username", &self.username)
-            .field("password", &self.password.as_ref().map(|_| "<redacted>"))
-            .field("password_env", &self.password_env)
-            .field("password_file", &self.password_file)
-            .field("bypass", &self.bypass)
-            .field("tls_insecure_skip_verify", &self.tls_insecure_skip_verify)
-            .field("http_proxy", &self.http_proxy)
-            .field("https_proxy", &self.https_proxy)
-            .field("fallback_proxy", &self.fallback_proxy)
-            .finish()
-    }
-}
-
-impl ProfileConfig {
-    /// A profile of `kind` with every optional field unset.
-    pub fn of_kind(kind: ProfileType) -> Self {
-        Self {
-            kind,
-            host: None,
-            port: None,
-            username: None,
-            password: None,
-            password_env: None,
-            password_file: None,
-            bypass: Vec::new(),
-            tls_insecure_skip_verify: false,
-            http_proxy: None,
-            https_proxy: None,
-            fallback_proxy: None,
-        }
-    }
-
-    /// Redacted upstream address for logs and diagnostics (`scheme://host:port`), never
-    /// carrying credentials. `direct`/`block`/`composite` render as their type name.
-    pub fn redacted_upstream(&self) -> String {
-        match (self.kind.is_proxy(), &self.host, self.port) {
-            (true, Some(host), Some(port)) => {
-                let host = if host.contains(':') && !host.starts_with('[') {
-                    format!("[{host}]")
-                } else {
-                    host.clone()
-                };
-                format!("{}://{host}:{port}", self.kind)
-            }
-            _ => self.kind.as_str().to_string(),
-        }
-    }
-
-    /// Number of configured password sources (`password`, `password_env`, `password_file`).
-    fn password_source_count(&self) -> usize {
-        [
-            self.password.is_some(),
-            self.password_env.is_some(),
-            self.password_file.is_some(),
-        ]
-        .into_iter()
-        .filter(|set| *set)
-        .count()
-    }
-
-    /// Resolve the password from whichever single source is configured (file contents have
-    /// a trailing `\n` / `\r\n` trimmed). Errors never include the secret itself.
-    pub fn resolve_password(&self, name: &str) -> Result<Option<String>, ConfigError> {
-        let err = |message: String| ConfigError::ResolvePassword {
-            profile: name.to_string(),
-            message,
-        };
-        if self.password_source_count() > 1 {
-            return Err(ConfigError::AmbiguousPassword {
-                profile: name.to_string(),
-            });
-        }
-        if let Some(p) = &self.password {
-            return Ok(Some(p.clone()));
-        }
-        if let Some(var) = &self.password_env {
-            return std::env::var(var)
-                .map(Some)
-                .map_err(|e| err(format!("environment variable {var}: {e}")));
-        }
-        if let Some(path) = &self.password_file {
-            let text = fs::read_to_string(path)
-                .map_err(|e| err(format!("password file {}: {e}", path.display())))?;
-            return Ok(Some(trim_newline(&text).to_string()));
-        }
-        Ok(None)
-    }
-}
+// The routing/profile model (`OneOrMany`, `Target`, `PortSpec`, `HostLevels`, `RuleConfig`,
+// `RoutingTableConfig`, `RoutingConfig`, `ProfileType`, `ProfileConfig`) and the inbound
+// family (`Inbound`) are defined in `rusty-conduit-engine` and re-exported at the top of this
+// file, so the TOML structs below (`FileConfig` etc.) reference them unchanged.
 
 /// `[tcp_keepalive]` table.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
@@ -805,13 +533,8 @@ impl FileConfig {
 // Merged configuration
 // ---------------------------------------------------------------------------
 
-/// Where the MITM CA comes from (only present when MITM mode is ON).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum CaSource {
-    Pem { cert: PathBuf, key: PathBuf },
-    Pkcs12 { path: PathBuf },
-}
-
+/// Where the MITM CA comes from (only present when MITM mode is ON). Re-exported from
+/// `rusty-conduit-engine::mitm::CaSource`.
 /// Fully merged configuration.
 #[derive(Clone, PartialEq, Eq)]
 pub struct Config {
@@ -1057,13 +780,53 @@ impl Config {
             return Err(ConfigError::ZeroConnectTimeout);
         }
         self.validate_keepalive()?;
-        self.validate_profiles()?;
-        self.validate_targets()?;
-        self.validate_no_self_loop()?;
-        // Compile every rule, bypass list, and composite profile (regex / CIDR / port / time
-        // syntax, composite cycles) exactly as the router will.
-        crate::router::validate::validate_config(self)?;
+        // The routing model (profile shapes, password sources, profile references, self-loops
+        // against the active listeners, and every rule/bypass/composite profile) is validated by
+        // the engine exactly as it is compiled, so delegate there and map its errors onto
+        // `ConfigError` with identical messages.
+        self.routing_input().validate().map_err(ConfigError::from)?;
         Ok(())
+    }
+
+    /// Everything the engine needs to validate and compile the routing model, built from this
+    /// merged configuration: declared profiles, the `[routing]` table, the global filter, MITM
+    /// state, the active listener addresses (for self-loop detection), and upstream timeouts.
+    pub fn routing_input(&self) -> RoutingInput {
+        RoutingInput {
+            profiles: self.profiles.clone(),
+            routing: self.routing.clone(),
+            filter: self.host_filter(),
+            mitm_enabled: self.mitm_enabled(),
+            listeners: self
+                .active_ports()
+                .into_iter()
+                .map(|port| SocketAddr::new(self.bind, port))
+                .collect(),
+            keepalive: self.tcp_keepalive_settings(),
+            connect_timeout: self.connect_timeout,
+        }
+    }
+
+    /// MITM settings, independent of how this configuration was loaded.
+    pub fn mitm_options(&self) -> MitmOptions {
+        MitmOptions {
+            ca: self.ca_source(),
+            passphrase: self.mitm_ca_passphrase.clone(),
+            passphrase_file: self.mitm_ca_passphrase_file.clone(),
+            cert_ttl: self.mitm_cert_ttl,
+            cert_cache_max: self.mitm_cert_cache_max,
+        }
+    }
+
+    /// Listener settings, independent of how this configuration was loaded.
+    pub fn server_options(&self) -> ServerOptions {
+        ServerOptions {
+            bind: self.bind,
+            http_port: self.http_port,
+            socks_port: self.socks_port,
+            max_connections: self.max_connections,
+            keepalive: self.tcp_keepalive_settings(),
+        }
     }
 
     fn validate_keepalive(&self) -> Result<(), ConfigError> {
@@ -1095,64 +858,6 @@ impl Config {
         Ok(())
     }
 
-    fn validate_profiles(&self) -> Result<(), ConfigError> {
-        for (name, p) in &self.profiles {
-            let invalid = |message: String| ConfigError::InvalidProfile {
-                profile: name.clone(),
-                message,
-            };
-            if name.is_empty() {
-                return Err(invalid("profile name must not be empty".into()));
-            }
-            let builtin = match name.as_str() {
-                PROFILE_DIRECT => Some(ProfileType::Direct),
-                PROFILE_BLOCK => Some(ProfileType::Block),
-                _ => None,
-            };
-            if let Some(kind) = builtin {
-                if p.kind != kind {
-                    return Err(invalid(format!(
-                        "built-in profile `{name}` cannot be redefined as type `{}`",
-                        p.kind
-                    )));
-                }
-            }
-            if p.password_source_count() > 1 {
-                return Err(ConfigError::AmbiguousPassword {
-                    profile: name.clone(),
-                });
-            }
-            if p.kind.is_proxy() {
-                match p.host.as_deref().map(str::trim) {
-                    None | Some("") => {
-                        return Err(invalid(format!("type `{}` requires `host`", p.kind)))
-                    }
-                    Some(_) => {}
-                }
-                match p.port {
-                    None | Some(0) => {
-                        return Err(invalid(format!(
-                            "type `{}` requires a non-zero `port`",
-                            p.kind
-                        )))
-                    }
-                    Some(_) => {}
-                }
-            }
-            if p.kind == ProfileType::Composite
-                && p.http_proxy.is_none()
-                && p.https_proxy.is_none()
-                && p.fallback_proxy.is_none()
-            {
-                return Err(invalid(
-                    "type `composite` requires at least one of http_proxy, https_proxy, fallback_proxy"
-                        .into(),
-                ));
-            }
-        }
-        Ok(())
-    }
-
     /// Whether `name` is a declared or built-in profile.
     pub fn has_profile(&self, name: &str) -> bool {
         name == PROFILE_DIRECT || name == PROFILE_BLOCK || self.profiles.contains_key(name)
@@ -1171,60 +876,6 @@ impl Config {
         all
     }
 
-    fn validate_targets(&self) -> Result<(), ConfigError> {
-        let check = |location: String, target: &Target| -> Result<(), ConfigError> {
-            let names = target.as_slice();
-            if names.is_empty() {
-                return Err(ConfigError::EmptyTarget { location });
-            }
-            match names.iter().find(|n| !self.has_profile(n)) {
-                Some(missing) => Err(ConfigError::UnknownProfile {
-                    location,
-                    target: missing.clone(),
-                }),
-                None => Ok(()),
-            }
-        };
-        let check_rules = |table: &str, rules: &[RuleConfig]| -> Result<(), ConfigError> {
-            for (i, rule) in rules.iter().enumerate() {
-                let label = match &rule.name {
-                    Some(n) => format!("{table} rule #{} ({n:?})", i + 1),
-                    None => format!("{table} rule #{}", i + 1),
-                };
-                check(label, &rule.target)?;
-            }
-            Ok(())
-        };
-
-        check("[routing].default".into(), &self.routing.default)?;
-        check_rules("[routing]", &self.routing.rules)?;
-        for (key, table) in [("http", &self.routing.http), ("socks", &self.routing.socks)] {
-            if let Some(t) = table {
-                if let Some(d) = &t.default {
-                    check(format!("[routing.{key}].default"), d)?;
-                }
-                check_rules(&format!("[routing.{key}]"), &t.rules)?;
-            }
-        }
-        for (name, p) in &self.profiles {
-            for (field, sub) in [
-                ("http_proxy", &p.http_proxy),
-                ("https_proxy", &p.https_proxy),
-                ("fallback_proxy", &p.fallback_proxy),
-            ] {
-                if let Some(sub) = sub {
-                    if !self.has_profile(sub) {
-                        return Err(ConfigError::UnknownProfile {
-                            location: format!("profile `{name}` {field}"),
-                            target: sub.clone(),
-                        });
-                    }
-                }
-            }
-        }
-        Ok(())
-    }
-
     /// Ports of the listeners this configuration enables.
     pub fn active_ports(&self) -> Vec<u16> {
         let mut ports: Vec<u16> = [self.http_port, self.socks_port]
@@ -1233,30 +884,6 @@ impl Config {
             .collect();
         ports.dedup();
         ports
-    }
-
-    /// Reject any proxy profile whose `host:port` is one of this server's own listeners.
-    ///
-    /// `localhost` counts as `127.0.0.1` / `::1`. When the server binds an unspecified
-    /// address (`0.0.0.0` / `::`), loopback and unspecified upstream addresses also count.
-    /// Hostnames other than `localhost` are not resolved (no DNS at validation time).
-    pub fn validate_no_self_loop(&self) -> Result<(), ConfigError> {
-        let ports = self.active_ports();
-        for (name, p) in &self.profiles {
-            let (true, Some(host), Some(port)) = (p.kind.is_proxy(), &p.host, p.port) else {
-                continue;
-            };
-            if !ports.contains(&port) {
-                continue;
-            }
-            if host_targets_listener(host, self.bind) {
-                return Err(ConfigError::SelfLoop {
-                    profile: name.clone(),
-                    listener: std::net::SocketAddr::new(self.bind, port).to_string(),
-                });
-            }
-        }
-        Ok(())
     }
 
     /// The configured TCP keepalive parameters, or `None` when keepalive is disabled.
@@ -1427,42 +1054,6 @@ impl Config {
             path(&self.config_path),
         )
     }
-}
-
-/// Canonicalize IPv4-mapped IPv6 (`::ffff:a.b.c.d`) to IPv4.
-fn canonical_ip(ip: IpAddr) -> IpAddr {
-    match ip {
-        IpAddr::V6(v6) => v6.to_ipv4_mapped().map(IpAddr::V4).unwrap_or(ip),
-        v4 => v4,
-    }
-}
-
-/// Whether an upstream `host` (IP literal or `localhost`) reaches a listener bound on `bind`.
-pub(crate) fn host_targets_listener(host: &str, bind: IpAddr) -> bool {
-    let host = host.trim().trim_end_matches('.');
-    let host = host
-        .strip_prefix('[')
-        .and_then(|h| h.strip_suffix(']'))
-        .unwrap_or(host);
-    let candidates: Vec<IpAddr> = if host.eq_ignore_ascii_case("localhost") {
-        vec![
-            IpAddr::V4(Ipv4Addr::LOCALHOST),
-            IpAddr::V6(Ipv6Addr::LOCALHOST),
-        ]
-    } else {
-        match host.parse::<IpAddr>() {
-            Ok(ip) => vec![canonical_ip(ip)],
-            Err(_) => return false,
-        }
-    };
-    let bind = canonical_ip(bind);
-    candidates.into_iter().any(|ip| {
-        if bind.is_unspecified() {
-            ip.is_loopback() || ip.is_unspecified()
-        } else {
-            ip == bind
-        }
-    })
 }
 
 fn trim_newline(text: &str) -> &str {
@@ -2054,15 +1645,10 @@ target = "direct"
         assert_eq!(p.resolve_password("p").unwrap().as_deref(), Some("inline"));
         assert!(!format!("{p:?}").contains("inline"), "Debug must redact");
         p.password = None;
-        p.password_env = Some("RCS_TEST_CORP_PASS".into());
-        assert_eq!(
-            p.resolve_password("p").unwrap().as_deref(),
-            Some("from-env")
-        );
         p.password_env = Some("RCS_TEST_MISSING".into());
         assert!(matches!(
             p.resolve_password("p"),
-            Err(ConfigError::ResolvePassword { .. })
+            Err(RoutingError::ResolvePassword { .. })
         ));
         p.password_env = None;
         let path = temp_file("from-file\r\n");
@@ -2074,7 +1660,7 @@ target = "direct"
         p.password = Some("x".into());
         assert!(matches!(
             p.resolve_password("p"),
-            Err(ConfigError::AmbiguousPassword { .. })
+            Err(RoutingError::AmbiguousPassword { .. })
         ));
         fs::remove_file(path).ok();
     }

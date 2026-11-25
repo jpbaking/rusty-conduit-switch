@@ -1417,6 +1417,35 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cf54715a573b99ac80df0bc206da022bcd442c974952c7b9720069370852e21f"
 
 [[package]]
+name = "rusty-conduit-engine"
+version = "0.1.0"
+dependencies = [
+ "arc-swap",
+ "base64 0.22.1",
+ "bytes",
+ "dashmap",
+ "http",
+ "http-body-util",
+ "humantime",
+ "hyper",
+ "hyper-util",
+ "p12-keystore",
+ "rcgen",
+ "regex",
+ "rustls",
+ "rustls-platform-verifier",
+ "serde",
+ "serde_json",
+ "socket2",
+ "thiserror 2.0.21",
+ "time",
+ "tokio",
+ "tokio-rustls",
+ "tokio-util",
+ "x509-parser",
+]
+
+[[package]]
 name = "rusty-conduit-switch"
 version = "0.0.1-beta.1"
 dependencies = [
@@ -1424,8 +1453,6 @@ dependencies = [
  "base64 0.22.1",
  "bytes",
  "clap",
- "dashmap",
- "http",
  "http-body-util",
  "humantime",
  "hyper",
@@ -1435,10 +1462,9 @@ dependencies = [
  "rcgen",
  "regex",
  "rustls",
- "rustls-platform-verifier",
+ "rusty-conduit-engine",
  "serde",
  "serde_json",
- "socket2",
  "thiserror 2.0.21",
  "time",
  "tokio",
