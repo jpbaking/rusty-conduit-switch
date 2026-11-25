@@ -1,0 +1,203 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+  packages: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  verify:
+    name: Verify
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --check
+      - run: cargo clippy --all-targets --locked -- -D warnings
+      - run: cargo test --locked
+
+  build:
+    name: Build (${{ matrix.pkg }})
+    needs: verify
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - pkg: linux-amd64
+            os: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+            ext: ""
+            archive: tar.gz
+          - pkg: linux-arm64
+            os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+            ext: ""
+            archive: tar.gz
+          - pkg: macos-amd64
+            os: macos-latest
+            target: x86_64-apple-darwin
+            ext: ""
+            archive: tar.gz
+          - pkg: macos-arm64
+            os: macos-latest
+            target: aarch64-apple-darwin
+            ext: ""
+            archive: tar.gz
+          - pkg: windows-amd64
+            os: windows-latest
+            target: x86_64-pc-windows-msvc
+            ext: ".exe"
+            archive: zip
+          - pkg: windows-arm64
+            os: windows-11-arm
+            target: aarch64-pc-windows-msvc
+            ext: ".exe"
+            archive: zip
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: release-${{ matrix.pkg }}
+
+      - name: Build release binary
+        run: cargo build --release --locked --target ${{ matrix.target }}
+
+      - name: Package archive (Unix)
+        if: matrix.archive == 'tar.gz'
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG="${GITHUB_REF_NAME}"
+          STAGE="rusty-conduit-switch-${TAG}-${{ matrix.pkg }}"
+          mkdir -p "${STAGE}" dist
+          cp "target/${{ matrix.target }}/release/rusty-conduit-switch" "${STAGE}/"
+          cp README.md LICENSE docs/USER-GUIDE.md docs/MITM-CA-GUIDE.md "${STAGE}/"
+          tar -czf "dist/${STAGE}.tar.gz" "${STAGE}"
+
+      - name: Package archive (Windows)
+        if: matrix.archive == 'zip'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $Tag = $env:GITHUB_REF_NAME
+          $Stage = "rusty-conduit-switch-$Tag-${{ matrix.pkg }}"
+          New-Item -ItemType Directory -Force -Path $Stage, dist | Out-Null
+          Copy-Item "target/${{ matrix.target }}/release/rusty-conduit-switch.exe" "$Stage/"
+          Copy-Item README.md, LICENSE, docs/USER-GUIDE.md, docs/MITM-CA-GUIDE.md "$Stage/"
+          Compress-Archive -Path $Stage -DestinationPath "dist/$Stage.zip"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist-${{ matrix.pkg }}
+          path: dist/*
+          if-no-files-found: error
+
+  release:
+    name: Publish GitHub Release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: dist-*
+          path: dist
+          merge-multiple: true
+
+      - name: Generate SHA256SUMS.txt
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd dist
+          sha256sum rusty-conduit-switch-* > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG="${GITHUB_REF_NAME}"
+          PRERELEASE_FLAG=""
+          if [[ "${TAG}" == *-* ]]; then
+            PRERELEASE_FLAG="--prerelease"
+          fi
+          gh release create "${TAG}" dist/* \
+            --title "rusty-conduit-switch ${TAG}" \
+            ${PRERELEASE_FLAG} \
+            --generate-notes
+
+  docker:
+    name: Publish Docker Image (GHCR)
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist-linux-amd64
+          path: artifacts/linux-amd64
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist-linux-arm64
+          path: artifacts/linux-arm64
+
+      - name: Stage prebuilt Linux binaries
+        shell: bash
+        run: |
+          set -euo pipefail
+          for arch in amd64 arm64; do
+            mkdir -p "dist/linux-${arch}"
+            tar -xzf "artifacts/linux-${arch}"/*.tar.gz --strip-components=1 -C "dist/linux-${arch}"
+            test -x "dist/linux-${arch}/rusty-conduit-switch"
+          done
+
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract Docker metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository }}
+          flavor: |
+            latest=auto
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=semver,pattern={{major}}
+
+      - name: Build and push multi-arch image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          target: prebuilt
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
