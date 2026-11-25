@@ -1,0 +1,67 @@
+[package]
+name = "rusty-conduit-switch"
+version = "1.2.0"
+edition = "2021"
+description = "Lightweight cross-platform HTTP/HTTPS and SOCKS4/4a/5 Auto Switch proxy server with optional HTTPS MITM inspection"
+license = "BSD-3-Clause"
+
+[lib]
+name = "rusty_conduit_switch"
+path = "src/lib.rs"
+
+[[bin]]
+name = "rusty-conduit-switch"
+path = "src/main.rs"
+
+[dependencies]
+# Async runtime & utilities
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util", "time", "sync", "signal", "fs", "io-std"] }
+tokio-util = { version = "0.7", features = ["rt"] }
+bytes = "1"
+
+# HTTP
+hyper = { version = "1", features = ["http1", "http2", "server", "client"] }
+hyper-util = { version = "0.1", features = ["tokio"] }
+http = "1"
+http-body-util = "0.1"
+
+# TLS & certificates (pure-Rust stack; `ring` provider, no OpenSSL / aws-lc)
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12", "logging"] }
+rustls-platform-verifier = "0.6"
+rcgen = { version = "0.14", default-features = false, features = ["crypto", "pem", "ring", "x509-parser"] }
+p12-keystore = "0.4"
+x509-parser = "0.18"
+
+# Sockets (TCP keepalive tuning)
+socket2 = "0.6"
+
+# Concurrency
+dashmap = "6"
+# Lock-free hot-reload snapshots.
+arc-swap = "1"
+
+# Rule matching
+# `regex` for host/URL regex rules; `base64` for HTTP `Proxy-Authorization`.
+regex = "1"
+base64 = "0.22"
+
+# Hot-Reload Watcher
+# Cross-platform file watching (`kqueue`, `inotify`, `ReadDirectoryChangesW`).
+notify = "6"
+
+# CLI, Config & Time
+clap = { version = "4", features = ["derive", "env"] }
+serde = { version = "1", features = ["derive"] }
+toml = "1"
+serde_json = "1"
+humantime = "2"
+# `local-offset` provides the local timezone needed for weekday/time routing rules.
+time = { version = "0.3", features = ["formatting", "macros", "local-offset"] }
+
+# Errors
+thiserror = "2"
+
+[dev-dependencies]
+# `all` exposes the keepalive getters used to verify socket options in tests.
+socket2 = { version = "0.6", features = ["all"] }

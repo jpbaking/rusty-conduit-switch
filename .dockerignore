@@ -1,0 +1,10 @@
+.git
+.github
+target
+dist/*
+!dist/linux-amd64/rusty-conduit-switch
+!dist/linux-arm64/rusty-conduit-switch
+docs
+tests
+*.md
+LICENSE
