@@ -121,10 +121,16 @@ ports, times), and self-loops (a profile pointing at this server's own listener)
 `0` when the file is valid and `1` with the error on stderr otherwise. Routing notices, such
 as URL rules that cannot match some traffic, are printed too.
 
-`validate` checks settings, not the files they name: a missing or unreadable CA key or
-`password_file` still passes and fails only at startup. Other flags go before the subcommand
-(`rusty-conduit-switch --http-port 8080 validate --config config.toml`); only `--config` may
-follow it.
+It also checks the files and variables the config names, as startup would: it resolves every
+upstream password (a `password_env` variable must be set and a `password_file` readable), loads
+the MITM CA (files, passphrase, validity, and that the key matches the certificate), and checks
+that each log file can be opened, without creating it. It prints the open-file `NOTICE` startup
+would log, too.
+
+`--settings-only` skips those checks, for checking a config away from the host it runs on, for
+example in CI where the password files exist only on the server. Other flags go before the
+subcommand (`rusty-conduit-switch --http-port 8080 validate --config config.toml`); only
+`--config` and `--settings-only` may follow it.
 
 ### `test-route`
 

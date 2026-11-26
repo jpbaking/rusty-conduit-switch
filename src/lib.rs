@@ -17,6 +17,7 @@
 pub mod config;
 pub mod fdlimit;
 pub mod import;
+pub mod preflight;
 pub mod reload;
 
 // Extracted proxy engine (E1b): the routing/profile model and compiled snapshots
@@ -275,9 +276,35 @@ fn load_subcommand_config(name: &'static str, cli: CliInput) -> Result<Config, C
 }
 
 /// `validate --config <PATH>`: exit 0 when the configuration is valid, 1 otherwise.
+/// The offline checks startup would fail on (see [`preflight`]), in startup order: the
+/// access logs, the routing state (which resolves every upstream password), and the MITM CA.
+pub fn preflight_checks(cfg: &Config) -> Result<(), String> {
+    if let Some(path) = &cfg.http_access_log {
+        preflight::check_log_path("--http-access-log", path)?;
+    }
+    if let Some(path) = &cfg.socks_log {
+        preflight::check_log_path("--socks-log", path)?;
+    }
+    RoutingState::from_input(&cfg.routing_input(), upstream::DialerOptions::default())
+        .map_err(|e| e.to_string())?;
+    preflight::check_mitm(&cfg.mitm_options())
+}
+
 pub fn cmd_validate(cli: CliInput, out: &mut dyn Write, err: &mut dyn Write) -> u8 {
+    let settings_only = matches!(
+        cli.args.command,
+        Some(Command::Validate {
+            settings_only: true
+        })
+    );
     match load_subcommand_config("validate", cli) {
         Ok(cfg) => {
+            if !settings_only {
+                if let Err(e) = preflight_checks(&cfg) {
+                    let _ = writeln!(err, "config invalid: {e}");
+                    return EXIT_FATAL;
+                }
+            }
             let path = cfg
                 .config_path
                 .as_ref()
@@ -291,6 +318,13 @@ pub fn cmd_validate(cli: CliInput, out: &mut dyn Write, err: &mut dyn Write) -> 
             );
             for notice in all_notices(&cfg) {
                 let _ = writeln!(out, "{notice}");
+            }
+            if !settings_only {
+                if let Some(notice) =
+                    preflight::fd_limit_notice(cfg.max_connections, "--max-connections")
+                {
+                    let _ = writeln!(out, "{notice}");
+                }
             }
             0
         }
@@ -425,7 +459,9 @@ pub fn main_entry() -> ExitCode {
     let mut out = std::io::stdout();
     let mut err = std::io::stderr();
     match cli.args.command.clone() {
-        Some(Command::Validate) => return ExitCode::from(cmd_validate(cli, &mut out, &mut err)),
+        Some(Command::Validate { .. }) => {
+            return ExitCode::from(cmd_validate(cli, &mut out, &mut err))
+        }
         Some(Command::TestRoute { inbound, target }) => {
             return ExitCode::from(cmd_test_route(cli, inbound, &target, &mut out, &mut err))
         }

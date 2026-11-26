@@ -42,6 +42,7 @@ thiserror = "2"
 
 [target.'cfg(unix)'.dependencies]
 rlimit = "0.12"
+libc = "0.2"
 
 [dev-dependencies]
 # Integration-test fixtures (origin servers, MITM/TLS clients, CA generation). The engine

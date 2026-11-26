@@ -887,6 +887,63 @@ fn cmd_test_route_prints_decisions() {
 }
 
 #[test]
+fn cmd_validate_checks_the_files_it_names_unless_settings_only() {
+    let profile =
+        "[profiles.corp]\ntype = \"http\"\nhost = \"10.0.0.2\"\nport = 3128\nusername = \"a\"\n";
+    let cases = [
+        (
+            "pw-file",
+            format!("{profile}password_file = \"/nonexistent/corp_pass\"\n"),
+            "/nonexistent/corp_pass",
+        ),
+        (
+            "pw-env",
+            format!("{profile}password_env = \"RCS_TEST_UNSET_PASSWORD_VAR\"\n"),
+            "RCS_TEST_UNSET_PASSWORD_VAR",
+        ),
+        (
+            "ca",
+            "[mitm]\nca_cert = \"/nonexistent/ca.pem\"\nca_key = \"/nonexistent/ca.key\"\n"
+                .to_string(),
+            "MITM setup failed",
+        ),
+        (
+            "log",
+            "[logging]\nhttp_access_log = \"/nonexistent-rcs-dir/http.log\"\n".to_string(),
+            "cannot create --http-access-log",
+        ),
+    ];
+    for (tag, body, needle) in cases {
+        let file = TempFile::new(&format!("validate-files-{tag}"), &body);
+        let (mut out, mut err) = (Vec::new(), Vec::new());
+        let code = cmd_validate(
+            cli(&["validate", "--config", file.path()]),
+            &mut out,
+            &mut err,
+        );
+        let err = String::from_utf8(err).unwrap();
+        assert_eq!(code, 1, "{tag}: {}", String::from_utf8_lossy(&out));
+        assert!(
+            err.starts_with("config invalid:") && err.contains(needle),
+            "{tag}: {err}"
+        );
+
+        let (mut out, mut err) = (Vec::new(), Vec::new());
+        let code = cmd_validate(
+            cli(&["validate", "--settings-only", "--config", file.path()]),
+            &mut out,
+            &mut err,
+        );
+        assert_eq!(
+            code,
+            0,
+            "{tag} --settings-only: {}",
+            String::from_utf8_lossy(&err)
+        );
+    }
+}
+
+#[test]
 fn binary_validate_and_test_route() {
     let f = TempFile::new("binary", &annotated_example());
     let bin = env!("CARGO_BIN_EXE_rusty-conduit-switch");

@@ -56,6 +56,9 @@ docker run -d --name rusty-conduit-switch --restart unless-stopped \
   CPUs. Leave it in place unless you measure otherwise; see [Performance, Footprint &
   Sizing](PERFORMANCE-AND-SIZING.md#memory-on-many-core-linux-malloc_arena_max).
 - **Logs:** `docker logs -f rusty-conduit-switch`.
+- **While you set things up**, use `--restart on-failure:5` instead of `unless-stopped`. A
+  broken configuration then stops after five failed starts instead of restarting forever;
+  switch to `unless-stopped` once it runs.
 - **Stop:** `docker stop rusty-conduit-switch` sends `SIGTERM`, and active connections drain
   before exit.
 
@@ -88,9 +91,10 @@ docker run --rm -v "$PWD/conf:/etc/rusty-conduit-switch:ro" \
 # target=www.example.com:443 inbound=http table=[routing] rule=example-via-corp profile=corp chain=corp,direct upstream=http://corp-proxy:3128
 ```
 
-`validate` checks settings, not the files they name: an unreadable CA key or `password_file`
-still passes, and fails only when the proxy starts. To turn an AirSwitch backup into a config,
-mount a writable directory:
+`validate` also checks the files and variables the config names (passwords, CA, log paths) from
+inside the container, so run it with the same mounts and environment as the proxy. To check
+only the settings, add `--settings-only`. To turn an AirSwitch backup into a config, mount a
+writable directory:
 
 ```sh
 docker run --rm -v "$PWD/conf:/work" ghcr.io/jpbaking/rusty-conduit-switch:2 \

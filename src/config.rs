@@ -160,8 +160,14 @@ impl From<rusty_conduit_engine::routing::RoutingError> for ConfigError {
 /// Subcommands. Without one, the proxy server runs.
 #[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
 pub enum Command {
-    /// Validate the configuration file (profiles, routing, self-loops) and exit 0/1
-    Validate,
+    /// Validate the configuration file (profiles, routing, self-loops) and the files it names
+    /// (upstream passwords, MITM CA, log paths), then exit 0/1
+    Validate {
+        /// Check the settings only; skip the files they name and password environment
+        /// variables (for checking a config away from the host it runs on)
+        #[arg(long)]
+        settings_only: bool,
+    },
     /// Dry-run the routing decision for a target and print it
     TestRoute {
         /// Inbound protocol to evaluate the routing table for
@@ -1596,11 +1602,21 @@ socks_log = "/file/socks.log"
     fn subcommand_validate() {
         let _env = EnvGuard::new(&[]);
         let c = cli(&["validate", "--config", "/etc/rcs.toml"]);
-        assert_eq!(c.args.command, Some(Command::Validate));
+        assert_eq!(
+            c.args.command,
+            Some(Command::Validate {
+                settings_only: false
+            })
+        );
         assert_eq!(c.args.config, Some(PathBuf::from("/etc/rcs.toml")));
         // --config is global: may also precede the subcommand.
         let c = cli(&["--config", "/a.toml", "validate"]);
-        assert_eq!(c.args.command, Some(Command::Validate));
+        assert_eq!(
+            c.args.command,
+            Some(Command::Validate {
+                settings_only: false
+            })
+        );
         assert_eq!(c.args.config, Some(PathBuf::from("/a.toml")));
     }
 
