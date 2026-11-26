@@ -86,7 +86,7 @@ jobs:
           STAGE="rusty-conduit-switch-${TAG}-${{ matrix.pkg }}"
           mkdir -p "${STAGE}" dist
           cp "target/${{ matrix.target }}/release/rusty-conduit-switch" "${STAGE}/"
-          cp README.md LICENSE docs/USER-GUIDE.md docs/MITM-CA-GUIDE.md "${STAGE}/"
+          cp -R README.md LICENSE docs "${STAGE}/"
           tar -czf "dist/${STAGE}.tar.gz" "${STAGE}"
 
       - name: Package archive (Windows)
@@ -98,7 +98,7 @@ jobs:
           $Stage = "rusty-conduit-switch-$Tag-${{ matrix.pkg }}"
           New-Item -ItemType Directory -Force -Path $Stage, dist | Out-Null
           Copy-Item "target/${{ matrix.target }}/release/rusty-conduit-switch.exe" "$Stage/"
-          Copy-Item README.md, LICENSE, docs/USER-GUIDE.md, docs/MITM-CA-GUIDE.md "$Stage/"
+          Copy-Item -Recurse README.md, LICENSE, docs "$Stage/"
           Compress-Archive -Path $Stage -DestinationPath "dist/$Stage.zip"
 
       - uses: actions/upload-artifact@v4

@@ -219,7 +219,7 @@ When the owning doc lies inside a nested root, make the update there — but say
 - The proxy engine (routing model, router, upstream dialers, HTTP/SOCKS engines, MITM, listeners/mux, filter, logging) lives in the external crate `rusty-conduit-engine`, pinned by git tag in `Cargo.toml` and re-exported from `src/lib.rs`. Engine behavior changes belong in that repository, not here; this crate owns CLI/config, hot-reload, subcommands, and import.
 - Config precedence is fixed: CLI flags > `RUSTY_CONDUIT_SWITCH_*` env vars > `--config` TOML > defaults.
 - HTTPS MITM stays opt-in and never auto-generates a CA.
-- User-facing docs live in `docs/` (`USER-GUIDE.md`, `MITM-CA-GUIDE.md`, `MASTER-PLAN.md`) and `README.md`; update them when CLI flags, TOML schema, or behavior change.
+- User-facing docs live in `README.md` and `docs/` (`USER-GUIDE-BASIC.md`, `USER-GUIDE-ADVANCED.md`, `MITM-CA-GUIDE.md`, `PERFORMANCE-AND-SIZING.md`, `DOCKER-GUIDE.md`); update them when CLI flags, TOML schema, behavior, or the `Dockerfile` change. Release archives ship `README.md`, `LICENSE`, and the whole `docs/` folder.
 - Verification (mirrors `.github/workflows/ci.yml`): `cargo fmt --check`, `cargo clippy --all-targets --locked -- -D warnings`, `cargo test --locked`. CI also runs `docker build` against `Dockerfile`; releases are cut by `.github/workflows/release.yml` on version tags.
 
 ## User Preferences
@@ -239,6 +239,7 @@ When the user requests a durable behavior change, record it here or in the relev
 - **AirSwitch / ZeroOmega / SwitchyOmega import** — converts a `.bak` backup into commented TOML. Start: `src/import/mod.rs` (`run_import`). Files: `src/import/airswitch.rs`, `src/lib.rs` (`cmd_import_airswitch`). Detail in ./src/import.
 - **Integration test suite** — end-to-end tests against real servers and mock proxies. Start: `tests/routing_rules.rs`. Files: `tests/`. Detail in ./tests.
 - **Packaging & release** — container image and CI/release pipelines. Start: `Dockerfile`. Files: `.dockerignore`, `.github/workflows/ci.yml`, `.github/workflows/release.yml`.
+- **User documentation** — marketing README with quick start, basic and advanced user guides, MITM CA guide, sizing, and Docker guide. Start: `README.md`. Files: `docs/`, `LICENSE`.
 
 ## Child DOX Index
 

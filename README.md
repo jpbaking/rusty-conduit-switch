@@ -2,6 +2,7 @@
 
 **A lightweight HTTP/HTTPS and SOCKS4/4a/5 Auto Switch proxy server in a single Rust binary: route every connection to named upstream proxies or failover chains with ordered rules, with optional pure-Rust HTTPS MITM inspection, atomic hot-reload, and AirSwitch `.bak` import.**
 
+[![Release](https://img.shields.io/github/v/release/jpbaking/rusty-conduit-switch)](https://github.com/jpbaking/rusty-conduit-switch/releases)
 [![License](https://img.shields.io/badge/license-BSD--3--Clause-blue.svg)](LICENSE)
 
 ---
@@ -16,20 +17,25 @@
 - **AirSwitch / ZeroOmega / SwitchyOmega import:** `import-airswitch` turns a browser-extension `.bak` backup into a commented, ready-to-validate TOML config.
 - **Opt-in HTTPS MITM:** OFF by default and **never auto-generates a CA**. Bring your own PEM or PKCS#12 CA. Upstream TLS runs over any routed upstream, including SOCKS5 and HTTP `CONNECT` proxies.
 - **Zero caching, pure-Rust TLS:** No HTTP response or DNS caching and no full-body buffering. The only cache holds MITM leaf certificates, bounded by TTL and entry count. Built on `rustls` + `ring`, with no OpenSSL.
+- **Survives long silent connections:** No idle timeout on established tunnels, plus TCP keepalive on client and upstream sockets (default `60s` idle / `10s` × `5` probes), so NAT, firewalls, and VPNs don't drop agents waiting on slow responses.
+- **Built for operators:** `CLI > env > TOML` configuration, `validate` and `test-route` dry runs, six log levels, `text` (logfmt) or `json` (NDJSON) access logs that name the matched rule, profile, and upstream, and connection and cert-cache caps, with a small footprint: about 8 MB idle and 27 KB per open tunnel (Linux with `MALLOC_ARENA_MAX=2`, which the container image sets; see [sizing](docs/PERFORMANCE-AND-SIZING.md)).
 
 ---
 
 ## Quick Start
 
-### 1. Build or run in Docker
+### 1. Download or install
+
+Download a prebuilt package for Linux, macOS, or Windows (`amd64` / `arm64`) from **[Releases](https://github.com/jpbaking/rusty-conduit-switch/releases)**, run with Docker, or build from source with Rust:
 
 ```sh
-# Build from source (Rust stable)
-cargo install --path .
+# Docker (multi-arch: linux/amd64, linux/arm64); see the Docker Guide for Compose
+docker run --rm -p 127.0.0.1:3128:3128 -p 127.0.0.1:1080:1080 \
+  -v "$PWD/conf:/etc/rusty-conduit-switch:ro" ghcr.io/jpbaking/rusty-conduit-switch:1 \
+  --config /etc/rusty-conduit-switch/config.toml --watch-config
 
-# Or build and run the container image (binds 0.0.0.0 inside the container)
-docker build -t rusty-conduit-switch .
-docker run --rm -p 127.0.0.1:3128:3128 -p 127.0.0.1:1080:1080 rusty-conduit-switch
+# Or build from source
+cargo install --path .
 ```
 
 ### 2. Write a config
@@ -92,9 +98,11 @@ curl --socks5-hostname 127.0.0.1:1080 https://example.com/     # SOCKS5 (remote 
 
 | Guide | What's inside |
 | :--- | :--- |
-| **[User Guide](docs/USER-GUIDE.md)** | Every CLI flag and environment variable, the full TOML schema, routing rules and conditions, failover, hot-reload, AirSwitch import, logging, and Docker |
+| **[Basic User Guide](docs/USER-GUIDE-BASIC.md)** | Installing, connecting browsers and CLI tools, a first routing config, AirSwitch import, and everyday options |
+| **[Advanced User Guide](docs/USER-GUIDE-ADVANCED.md)** | Every CLI flag, environment variable, and TOML key, upstream profiles, routing conditions, failover, hot-reload, HTTPS MITM, and logging |
 | **[MITM CA Guide](docs/MITM-CA-GUIDE.md)** | Generating your own PEM or PKCS#12 CA with `openssl`, starting the proxy with it, and trusting it on Linux, macOS, Windows, and Firefox |
-| **[Master Plan](docs/MASTER-PLAN.md)** | v1 architecture and design specification |
+| **[Performance, Footprint & Sizing](docs/PERFORMANCE-AND-SIZING.md)** | Measured CPU/RAM footprint, `ulimit -n` and `somaxconn` limits, concurrent user sizing, and resource caps |
+| **[Docker Guide](docs/DOCKER-GUIDE.md)** | Images, `docker run` and Compose examples, config hot-reload, reaching upstream proxies, secrets, limits, and health checks |
 
 ---
 

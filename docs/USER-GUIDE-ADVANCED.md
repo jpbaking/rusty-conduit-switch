@@ -1,106 +1,33 @@
-# rusty-conduit-switch User Guide
+# Advanced User Guide & Configuration Reference
 
-This guide covers everything you configure in `rusty-conduit-switch`:
+This guide covers every setting in `rusty-conduit-switch`: configuration precedence, the
+subcommands, the TOML file, upstream profiles, routing rules, failover, hot-reload, AirSwitch
+import, HTTPS MITM, logging, and connection lifetime.
 
-1. [Running the server](#1-running-the-server)
+- New to `rusty-conduit-switch`? Start with the **[Basic User Guide](USER-GUIDE-BASIC.md)**.
+- For RAM/CPU budgets, `ulimit -n` and `somaxconn` limits, and cap mechanics, see
+  **[Performance, Footprint & Sizing](PERFORMANCE-AND-SIZING.md)**.
+- For creating and trusting a private CA, see the **[MITM CA Guide](MITM-CA-GUIDE.md)**.
+- For containers and Compose, see the **[Docker Guide](DOCKER-GUIDE.md)**.
+
+Contents:
+
+1. [Configuration precedence and reference](#1-configuration-precedence-and-reference)
 2. [Subcommands](#2-subcommands): `validate`, `test-route`, `import-airswitch`
-3. [CLI flags and environment variables](#3-cli-flags-and-environment-variables)
-4. [The TOML configuration file](#4-the-toml-configuration-file)
-5. [Upstream profiles](#5-upstream-profiles)
-6. [Routing rules](#6-routing-rules)
-7. [Failover chains](#7-failover-chains)
-8. [Hot-reload](#8-hot-reload)
-9. [Importing from AirSwitch, ZeroOmega, or SwitchyOmega](#9-importing-from-airswitch-zeroomega-or-switchyomega)
-10. [HTTPS MITM inspection](#10-https-mitm-inspection)
-11. [Logging](#11-logging)
-12. [Docker](#12-docker)
+3. [The TOML configuration file](#3-the-toml-configuration-file)
+4. [Upstream profiles](#4-upstream-profiles)
+5. [Routing rules](#5-routing-rules)
+6. [Failover chains](#6-failover-chains)
+7. [Hot-reload](#7-hot-reload)
+8. [Importing from AirSwitch, ZeroOmega, or SwitchyOmega](#8-importing-from-airswitch-zeroomega-or-switchyomega)
+9. [HTTPS MITM inspection](#9-https-mitm-inspection)
+10. [Logging](#10-logging)
+11. [Connection lifetime and TCP keepalive](#11-connection-lifetime-and-tcp-keepalive)
+12. [Protocol support (v1)](#12-protocol-support-v1)
 
 ---
 
-## 1. Running the server
-
-```sh
-rusty-conduit-switch                               # 127.0.0.1:3128 (HTTP/HTTPS) + 127.0.0.1:1080 (SOCKS), everything direct
-rusty-conduit-switch --config config.toml          # routing from a config file
-rusty-conduit-switch --config config.toml --watch-config   # ... and hot-reload it on save
-```
-
-Without `--config`, every connection goes `direct`. Multi-profile routing needs a config
-file.
-
-**Listeners.** HTTP/HTTPS listens on `--http-port` (default `3128`) and SOCKS4/4a/5 on
-`--socks-port` (default `1080`). A port of `0` disables that listener; at least one must stay
-enabled. If both ports are the same (and not `0`), one listener serves both protocols and
-tells them apart by the first byte of each connection.
-
-**Inbound protocols.** Plain HTTP proxy requests (`GET http://...`), HTTPS `CONNECT`, SOCKS4,
-SOCKS4a, and SOCKS5 `CONNECT` (IPv4, IPv6, and domain names). TCP only; there is no SOCKS
-`BIND` or `UDP ASSOCIATE`.
-
-**No inbound authentication in v1.** Anyone who can reach the listener can use it. Keep
-`--bind` on loopback (the default) or restrict access with a firewall. The server prints a
-`SECURITY NOTICE` at startup when it binds to a non-loopback address.
-
-**Shutdown.** `Ctrl+C` or `SIGTERM` stops accepting connections and waits for active ones
-to drain.
-
-**Exit codes.** `0` on a clean shutdown or a successful subcommand, `1` on a fatal startup
-error (invalid configuration, unreadable CA, port already in use) or a failed subcommand.
-
----
-
-## 2. Subcommands
-
-### `validate`
-
-```sh
-rusty-conduit-switch validate --config config.toml
-# config OK: config.toml profiles=4 rules=2
-```
-
-Parses the file, applies CLI/env overrides, and runs the same checks as startup: unknown
-fields, profile types and required fields, ambiguous password sources, unknown profile
-references, composite-profile cycles, invalid rule syntax (regexes, CIDRs, wildcards,
-ports, times), and self-loops (a profile pointing at this server's own listener). It exits
-`0` when the file is valid and `1` with the error on stderr otherwise. Routing notices, such
-as URL rules that cannot match some traffic, are printed too.
-
-### `test-route`
-
-```sh
-rusty-conduit-switch test-route --config config.toml [--inbound http|socks] <HOST[:PORT] | URL>
-```
-
-Prints the routing decision for a target without connecting anywhere:
-
-```text
-target=10.1.2.3:443 inbound=http table=[routing] rule=rfc1918-to-corp profile=corp chain=corp upstream=http://10.0.0.2:3128
-```
-
-- The target is `HOST`, `HOST:PORT` (the port defaults to `80`), `[IPv6]:PORT`, or a full
-  `http://` / `https://` URL.
-- `--inbound` (default `http`) selects which table to evaluate: the HTTP or the SOCKS view
-  of the routing configuration.
-- The request is shaped the way the proxy would see it. SOCKS never sees a URL. An `https://`
-  URL is visible over HTTP only when MITM is configured; otherwise it is an opaque `CONNECT`
-  tunnel. In both cases URL rules are not evaluated and a `note:` line says so.
-- `profile=` shows how the target was resolved: `corp`, `corp(bypass->direct)` when the
-  profile's bypass list matched, or `split->split_http` for a composite profile.
-- No DNS lookup happens unless a rule opts in with `resolve_dns = true`.
-- A target rejected by the global filter prints `status=denied_by_filter`.
-
-### `import-airswitch`
-
-```sh
-rusty-conduit-switch import-airswitch <BAK_PATH> [-o <OUT.toml>] [--profile <SWITCH_PROFILE_NAME>] [--force]
-```
-
-Converts a browser-extension backup into a config file. See
-[section 9](#9-importing-from-airswitch-zeroomega-or-switchyomega).
-
----
-
-## 3. CLI flags and environment variables
+## 1. Configuration precedence and reference
 
 **Precedence: CLI flags > `RUSTY_CONDUIT_SWITCH_*` environment variables > `--config` TOML
 file > built-in defaults.**
@@ -162,53 +89,79 @@ startup. When both an old name and its replacement are set, the replacement wins
 | `[filter]` (deprecated) | `allow`, `block` |
 | `mitm.cert_cache_max` (deprecated) | `mitm.cert_cache_max_entries` |
 
-### Open-file limit
+### Listeners, shutdown, and exit codes
 
-Every concurrent proxied connection uses 2 file descriptors (client + upstream), so
-`--max-connections N` needs at least `2 × max_connections + 64` descriptors (`8256` at the
-default `4096`). On Unix, `rusty-conduit-switch` automatically raises its soft open-file limit
-(`RLIMIT_NOFILE`) toward the hard limit at startup whenever the current soft limit is below
-that threshold. If the limit still cannot hold `--max-connections`, it logs:
+**Listeners.** HTTP/HTTPS listens on `--http-port` (default `3128`) and SOCKS4/4a/5 on
+`--socks-port` (default `1080`). A port of `0` disables that listener; at least one must stay
+enabled. If both ports are the same (and not `0`), one listener serves both protocols and
+tells them apart by the first byte of each connection.
 
-```text
-NOTICE: open-file limit is <limit> but --max-connections <N> needs at least <needed>; only about <M> concurrent connections will fit. Raise `ulimit -n` (LimitNOFILE= under systemd) or lower --max-connections
-```
+**Shutdown.** `Ctrl+C` or `SIGTERM` stops accepting connections and waits for active ones
+to drain.
 
-### Listen backlog (`somaxconn`)
-
-Each listener (HTTP and SOCKS) asks the kernel for a listen backlog of `4096`: the queue of
-connections that have finished the TCP handshake but that `rusty-conduit-switch` has not
-accepted yet. The kernel caps the request at its own limit:
-
-| OS | Limit | Default |
-| :--- | :--- | :--- |
-| Linux | `net.core.somaxconn` | `4096` (kernel 5.4 and later; `128` before) |
-| macOS | `kern.ipc.somaxconn` | `128` |
-| Windows | set by the OS | — |
-
-The queue only matters during connection bursts, such as many clients reconnecting at once
-after a network drop. When it is full, the kernel drops the new connection attempts and clients
-retry about a second later, which shows up as slow connects rather than errors. If you expect
-bursts larger than the limit, check it and raise it to `4096`:
-
-```sh
-# Linux (persist the setting in /etc/sysctl.d/)
-sysctl net.core.somaxconn
-sudo sysctl -w net.core.somaxconn=4096
-
-# macOS (resets at reboot)
-sysctl kern.ipc.somaxconn
-sudo sysctl -w kern.ipc.somaxconn=4096
-```
-
-A value above `4096` has no effect, because `rusty-conduit-switch` requests `4096`. The backlog
-is fixed when a listener opens, so restart `rusty-conduit-switch` after changing the limit. On
-Linux, a container has its own `net.core.somaxconn` (normally `4096`) unless it uses the host
-network; set it with `docker run --sysctl net.core.somaxconn=4096`.
+**Exit codes.** `0` on a clean shutdown or a successful subcommand, `1` on a fatal startup
+error (invalid configuration, unreadable CA, port already in use) or a failed subcommand, and
+`2` for a command-line usage error.
 
 ---
 
-## 4. The TOML configuration file
+## 2. Subcommands
+
+### `validate`
+
+```sh
+rusty-conduit-switch validate --config config.toml
+# config OK: config.toml profiles=4 rules=2
+```
+
+Parses the file, applies CLI/env overrides, and runs the same checks as startup: unknown
+fields, profile types and required fields, ambiguous password sources, unknown profile
+references, composite-profile cycles, invalid rule syntax (regexes, CIDRs, wildcards,
+ports, times), and self-loops (a profile pointing at this server's own listener). It exits
+`0` when the file is valid and `1` with the error on stderr otherwise. Routing notices, such
+as URL rules that cannot match some traffic, are printed too.
+
+`validate` checks settings, not the files they name: a missing or unreadable CA key or
+`password_file` still passes and fails only at startup. Other flags go before the subcommand
+(`rusty-conduit-switch --http-port 8080 validate --config config.toml`); only `--config` may
+follow it.
+
+### `test-route`
+
+```sh
+rusty-conduit-switch test-route --config config.toml [--inbound http|socks] <HOST[:PORT] | URL>
+```
+
+Prints the routing decision for a target without connecting anywhere:
+
+```text
+target=10.1.2.3:443 inbound=http table=[routing] rule=rfc1918-to-corp profile=corp chain=corp upstream=http://10.0.0.2:3128
+```
+
+- The target is `HOST`, `HOST:PORT` (the port defaults to `80`), `[IPv6]:PORT`, or a full
+  `http://` / `https://` URL.
+- `--inbound` (default `http`) selects which table to evaluate: the HTTP or the SOCKS view
+  of the routing configuration.
+- The request is shaped the way the proxy would see it. SOCKS never sees a URL. An `https://`
+  URL is visible over HTTP only when MITM is configured; otherwise it is an opaque `CONNECT`
+  tunnel. In both cases URL rules are not evaluated and a `note:` line says so.
+- `profile=` shows how the target was resolved: `corp`, `corp(bypass->direct)` when the
+  profile's bypass list matched, or `split->split_http` for a composite profile.
+- No DNS lookup happens unless a rule opts in with `resolve_dns = true`.
+- A target rejected by the global filter prints `status=denied_by_filter`.
+
+### `import-airswitch`
+
+```sh
+rusty-conduit-switch import-airswitch <BAK_PATH> [-o <OUT.toml>] [--profile <SWITCH_PROFILE_NAME>] [--force]
+```
+
+Converts a browser-extension backup into a config file. See
+[section 8](#8-importing-from-airswitch-zeroomega-or-switchyomega).
+
+---
+
+## 3. The TOML configuration file
 
 Unknown keys are rejected, so typos fail validation instead of being ignored.
 
@@ -244,7 +197,7 @@ format = "text"
 # http_access_log = "/var/log/rusty-conduit-switch/http.log"
 # socks_log = "/var/log/rusty-conduit-switch/socks.log"
 
-# Upstream profiles: see section 5
+# Upstream profiles: see section 4
 [profiles.corp]
 type = "http"
 host = "10.0.0.2"
@@ -258,7 +211,7 @@ type = "socks5"
 host = "127.0.0.1"
 port = 1081
 
-# Routing: see section 6
+# Routing: see section 5
 [routing]
 default = "direct"
 resolve_dns = false
@@ -276,7 +229,7 @@ target = ["bastion", "corp"]
 
 ---
 
-## 5. Upstream profiles
+## 4. Upstream profiles
 
 Each `[profiles.<name>]` table defines one upstream. Two profiles always exist without being
 declared:
@@ -336,7 +289,7 @@ resolution as `profile=split->web_proxy`.
 
 ---
 
-## 6. Routing rules
+## 5. Routing rules
 
 ### How a connection is routed
 
@@ -421,7 +374,7 @@ target = "direct"
 
 ---
 
-## 7. Failover chains
+## 6. Failover chains
 
 Any `target` or `default` can be an ordered list:
 
@@ -440,7 +393,7 @@ target = ["bastion", "corp", "direct"]
 
 ---
 
-## 8. Hot-reload
+## 7. Hot-reload
 
 With `--config`, the routing state can change without a restart:
 
@@ -468,9 +421,13 @@ started with, and fully validates the result (including self-loops) before anyth
 `watch_debounce`, `mitm.*`, and `logging.*`. If one of these changes, the reload still applies
 the live sections and logs which fields were ignored until restart.
 
+In a container, mount the config **directory**, not the single file: an editor that saves by
+renaming a new file over the old one leaves a single-file mount pointing at a file that no longer
+exists. See the [Docker Guide](DOCKER-GUIDE.md#4-configuration-file-and-hot-reload).
+
 ---
 
-## 9. Importing from AirSwitch, ZeroOmega, or SwitchyOmega
+## 8. Importing from AirSwitch, ZeroOmega, or SwitchyOmega
 
 Export a backup from the extension's options page (**Import/Export → Backup**), then:
 
@@ -534,7 +491,7 @@ rusty-conduit-switch validate --config config.toml
 
 ---
 
-## 10. HTTPS MITM inspection
+## 9. HTTPS MITM inspection
 
 MITM is **off** unless you configure a CA, and the server **never generates one for you**.
 See the [MITM CA Guide](MITM-CA-GUIDE.md) to create one and trust it on your clients.
@@ -556,7 +513,7 @@ rusty-conduit-switch --config config.toml --mitm-ca-cert ca.pem --mitm-ca-key ca
 
 ---
 
-## 11. Logging
+## 10. Logging
 
 Diagnostics go to stderr. Six levels, from quietest to loudest: `QUIET` (nothing), `FATAL`,
 `ERROR`, `INFO` (default), `DEBUG`, `VERBOSE`.
@@ -574,26 +531,52 @@ ts=2026-11-25T11:30:02.456Z kind=socks client=127.0.0.1:51240 proto=socks5 cmd=C
 `--log-format json` writes the same fields as one JSON object per line (NDJSON). When no
 rule matched, `rule=<default>`.
 
+Log files are written through a buffer that is flushed whenever no more records are queued, so
+records reach the file within moments even on a quiet proxy, while bursts are still written in
+large blocks. Records on `stdout` are written immediately.
+
 ---
 
-## 12. Docker
+## 11. Connection lifetime and TCP keepalive
 
-The repository's `Dockerfile` builds the binary (pure-Rust TLS, no OpenSSL) in a Rust builder
-stage and runs it as an unprivileged user. Inside the container the server binds `0.0.0.0`
-(`RUSTY_CONDUIT_SWITCH_BIND`), so publish the ports on loopback unless you mean to expose
-them:
+Once a tunnel, SOCKS relay, or HTTP connection is established, no idle or total-lifetime
+timeout applies: a connection stays open as long as both peers keep it open, however long it
+sits silent. The time limits that do apply cover setup only (protocol sniffing, the SOCKS
+handshake, `connect_timeout` per failover attempt, and the MITM TLS handshake) and the drain on
+shutdown.
 
-```sh
-docker build -t rusty-conduit-switch .
+Silent connections can still be dropped **outside** the proxy: NAT gateways, firewalls, VPN
+concentrators, Docker or Kubernetes conntrack, and cloud load balancers expire idle flows,
+often without notifying either end. Long-polling clients, such as AI agents waiting on a model
+response, are the typical victims.
 
-docker run --rm \
-  -p 127.0.0.1:3128:3128 -p 127.0.0.1:1080:1080 \
-  -v "$PWD/conf:/etc/rusty-conduit-switch:ro" \
-  rusty-conduit-switch --config /etc/rusty-conduit-switch/config.toml --watch-config
+To keep that state alive, `rusty-conduit-switch` enables OS-level **TCP keepalive** on every
+accepted client socket and every upstream socket, including connections to upstream proxies. By
+default, the first probe is sent after `60s` idle, then every `10s`, and the connection is
+closed after `5` unanswered probes (about 110 seconds after the peer vanishes). The three
+settings are reloaded live.
 
-# Reload manually
-docker kill --signal HUP <container>
-```
+- Probes are empty TCP segments handled by the kernel. They are invisible to HTTP, TLS, SOCKS,
+  and any tunneled protocol, and add about 60 bytes per idle interval.
+- Probes keep each hop alive (client ↔ proxy, proxy ↔ upstream). They are not forwarded end
+  to end, so an upstream proxy's own idle timeout still applies to its side.
+- For SSH through the proxy, also set `ServerAliveInterval` (for example `30`) in
+  `~/.ssh/config`. It works end to end inside the encrypted session.
+- Set `--tcp-keepalive 0` to disable. On platforms without per-socket interval and retry
+  control, only the idle time is applied.
 
-Mount the config **directory**, not the single file. Editors that save by renaming a new file
-over the old one would otherwise leave the container watching a stale copy.
+---
+
+## 12. Protocol support (v1)
+
+**Inbound protocols.** Plain HTTP proxy requests (`GET http://...`), HTTPS `CONNECT`, SOCKS4,
+SOCKS4a, and SOCKS5 `CONNECT` (IPv4, IPv6, and domain names). TCP only; there is no SOCKS
+`BIND` or `UDP ASSOCIATE`.
+
+**No inbound authentication in v1.** Anyone who can reach the listener can use it. Keep
+`--bind` on loopback (the default) or restrict access with a firewall. The server prints a
+`SECURITY NOTICE` at startup when it binds to a non-loopback address.
+
+HTTPS MITM applies only to `CONNECT` tunnels on the HTTP port. TLS carried over SOCKS is
+relayed without interception; use `--socks-block-web` to stop web traffic from bypassing MITM
+that way.

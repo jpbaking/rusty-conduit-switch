@@ -187,7 +187,7 @@ With MITM on, the full `https://` URL of each decrypted request is visible, so U
 (`url_wildcard`, `url_regex`, `keyword`) can match HTTPS traffic too. When the routing table
 contains URL rules, every decrypted request is routed separately, and requests on the same
 client connection may go through different upstreams. Without URL rules, the route is chosen
-once per tunnel from the host name and port. See the [User Guide](USER-GUIDE.md#6-routing-rules).
+once per tunnel from the host name and port. See the [Advanced User Guide](USER-GUIDE-ADVANCED.md#5-routing-rules).
 
 SOCKS connections are never intercepted; they stay transparent TCP tunnels. Start the server
 with `--socks-block-web` (or `socks_block_web = true`) to reject HTTP and
@@ -318,14 +318,16 @@ keytool -importcert -noprompt -alias rusty-conduit-switch-ca -file ca.pem -cacer
 
 ### 4.6 Verifying interception
 
-Start rusty-conduit-switch with MITM and an access log, then send a request through it that trusts
-only your CA:
+Start rusty-conduit-switch with MITM at `--log-level DEBUG`, which prints each access record on `stdout`,
+then send a request through it that trusts only your CA:
 
 ```sh
-rusty-conduit-switch --mitm-ca-cert ca.pem --mitm-ca-key ca.key --http-access-log access.log &
-curl -sS -o /dev/null -w '%{http_code}\n' -x http://127.0.0.1:3128 --cacert ca.pem https://example.com/
-tail -n1 access.log
+rusty-conduit-switch --mitm-ca-cert ca.pem --mitm-ca-key ca.key --log-level DEBUG 2>/dev/null &
+curl -sS -o /dev/null -w '%{http_code}
+' -x http://127.0.0.1:3128 --cacert ca.pem https://example.com/
+# 200
 # ts=… kind=http client=127.0.0.1:… proto=https mitm=true method=GET target=https://example.com/ rule=<default> profile=direct upstream=direct status=200 …
+kill %1
 ```
 
 If the client reports an unknown issuer, the CA is not trusted in that client's store.
