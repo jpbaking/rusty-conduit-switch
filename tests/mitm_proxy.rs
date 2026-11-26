@@ -10,7 +10,7 @@
 //!   `block` per request.
 //! * PKCS#12 CA loading, leaf caching within the TTL, lazy expiry, the background reaper,
 //!   and the entry cap.
-//! * `--socks-block-web-in-mitm` blocking plaintext HTTP and HTTP-ALPN TLS over SOCKS while
+//! * `--socks-block-web` blocking plaintext HTTP and HTTP-ALPN TLS over SOCKS while
 //!   allowing non-web TCP.
 //!
 //! Every CA is ephemeral and generated in-process. The TLS origin is local and presents a
@@ -382,7 +382,7 @@ impl MitmProxy {
         cfg.validate().unwrap();
         let ca = test_ca("Switch Integration MITM CA");
         cfg.mitm_cert_ttl = o.ttl;
-        cfg.socks_block_web_in_mitm = o.socks_block_web;
+        cfg.socks_block_web = o.socks_block_web;
         match o.ca {
             CaKind::Pem => {
                 let (cert, key) = (dir.join("ca.pem"), dir.join("ca.key"));
@@ -431,10 +431,7 @@ impl MitmProxy {
             .with_connect_timeout(Duration::from_secs(3))
             .shared();
         let handlers = EngineHandlers::from_routing(routing, access.clone(), logger.clone())
-            .with_mitm(
-                Arc::new(state.interceptor.clone()),
-                cfg.socks_block_web_in_mitm,
-            );
+            .with_mitm(Arc::new(state.interceptor.clone()), cfg.socks_block_web);
         assert!(handlers.http_engine().mitm_enabled());
         let socks_guard = handlers.socks_engine().has_guard();
         let server = Server::bind(
@@ -898,7 +895,7 @@ async fn cert_cache_enforces_entry_cap_and_ttl() {
 }
 
 // ---------------------------------------------------------------------------
-// --socks-block-web-in-mitm
+// --socks-block-web
 // ---------------------------------------------------------------------------
 
 /// TLS record carrying a `ClientHello` with SNI and optional ALPN.
@@ -971,7 +968,7 @@ async fn echo_roundtrip(mut s: TcpStream, payload: &[u8]) -> Vec<u8> {
 }
 
 #[tokio::test]
-async fn socks_block_web_in_mitm_blocks_web_and_allows_other_tcp() {
+async fn socks_block_web_blocks_web_and_allows_other_tcp() {
     let origin = spawn_origin().await;
     let echo = echo_server().await;
     let toml = "[routing]\ndefault = \"direct\"\n";

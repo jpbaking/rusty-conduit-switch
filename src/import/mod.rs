@@ -213,7 +213,7 @@ pub fn render_toml(imp: &Imported, source_name: &str) -> String {
     out.push_str(
         "# Review this file, then check it with:\n\
          #   rusty-conduit-switch validate --config <this file>\n\
-         # Server settings (bind, ports, MITM, logging) use their defaults; see docs/USER-GUIDE.md.\n\
+         # Server settings (bind, ports, MITM, logging) use their defaults; see docs/USER-GUIDE-ADVANCED.md.\n\
          # Built-in profiles \"direct\" and \"block\" always exist and are not declared here.\n",
     );
     if !imp.warnings.is_empty() {

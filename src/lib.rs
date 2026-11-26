@@ -7,7 +7,7 @@
 //! ([`socks`]) engines ([`server::EngineHandlers`]) over one shared
 //! [`server::RoutingState`] (compiled [`router`] + [`upstream`] dialers). The routing engine
 //! also backs `validate` and `test-route`. When a CA is configured, HTTPS `CONNECT`s are
-//! intercepted ([`mitm`], [`http::mitm_tunnel`]) and `--socks-block-web-in-mitm` installs
+//! intercepted ([`mitm`], [`http::mitm_tunnel`]) and `--socks-block-web` installs
 //! the SOCKS web guard ([`socks::web_guard`]). With `--config`, the routing state is
 //! hot-reloadable ([`reload`]): `SIGHUP` on Unix and, with `--watch-config`, a debounced
 //! file watcher re-validate the file and atomically swap the shared runtime snapshot.
@@ -133,7 +133,7 @@ pub async fn run(cfg: Config, cli: CliInput, logger: Logger) -> ExitCode {
         ));
         engines = engines.with_mitm(Arc::new(m.interceptor.clone()), false);
     }
-    if cfg.socks_block_web_in_mitm {
+    if cfg.socks_block_web {
         logger.info("SOCKS web blocking enabled: HTTP/HTTPS over SOCKS is rejected");
         engines = engines.with_socks_block_web();
     }

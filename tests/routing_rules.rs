@@ -104,8 +104,8 @@ host = "10.0.0.5"
 port = 1080
 "#;
 
-/// The annotated example from docs/MASTER-PLAN.md Section 3 (minus `watch_config`).
-fn master_plan_example() -> String {
+/// An annotated example config that uses every section (minus `watch_config`).
+fn annotated_example() -> String {
     format!(
         r#"
 bind = "127.0.0.1"
@@ -156,8 +156,8 @@ target = "corp"
 // ---------------------------------------------------------------------------
 
 #[test]
-fn master_plan_example_routes_as_documented() {
-    let r = router(&master_plan_example());
+fn annotated_example_routes_as_documented() {
+    let r = router(&annotated_example());
     assert_eq!(r.rule_count(), 6);
 
     let d = route_at(
@@ -785,7 +785,7 @@ fn test_route(path: &str, inbound: Inbound, target: &str) -> (u8, String, String
 
 #[test]
 fn cmd_validate_reports_ok_notices_and_errors() {
-    let good = TempFile::new("validate-good", &master_plan_example());
+    let good = TempFile::new("validate-good", &annotated_example());
     let (mut out, mut err) = (Vec::new(), Vec::new());
     let code = cmd_validate(
         cli(&["validate", "--config", good.path()]),
@@ -820,7 +820,7 @@ fn cmd_validate_reports_ok_notices_and_errors() {
 
 #[test]
 fn cmd_test_route_prints_decisions() {
-    let f = TempFile::new("test-route", &master_plan_example());
+    let f = TempFile::new("test-route", &annotated_example());
     let (code, out, _) = test_route(f.path(), Inbound::Http, "api.internal.example:443");
     assert_eq!(code, 0);
     assert!(
@@ -888,7 +888,7 @@ fn cmd_test_route_prints_decisions() {
 
 #[test]
 fn binary_validate_and_test_route() {
-    let f = TempFile::new("binary", &master_plan_example());
+    let f = TempFile::new("binary", &annotated_example());
     let bin = env!("CARGO_BIN_EXE_rusty-conduit-switch");
     let run = |args: &[&str]| {
         let out = Command::new(bin)

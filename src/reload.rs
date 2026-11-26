@@ -84,8 +84,8 @@ pub fn non_reloadable_changes(active: &Config, new: &Config) -> Vec<&'static str
         "mitm.cert_cache_max_entries",
     );
     check(
-        active.socks_block_web_in_mitm != new.socks_block_web_in_mitm,
-        "mitm.socks_block_web",
+        active.socks_block_web != new.socks_block_web,
+        "socks_block_web",
     );
     check(active.log_level != new.log_level, "logging.level");
     check(active.log_format != new.log_format, "logging.format");
@@ -115,7 +115,7 @@ pub fn pin_non_reloadable(active: &Config, new: Config) -> Config {
         mitm_ca_passphrase_file: active.mitm_ca_passphrase_file.clone(),
         mitm_cert_ttl: active.mitm_cert_ttl,
         mitm_cert_cache_max: active.mitm_cert_cache_max,
-        socks_block_web_in_mitm: active.socks_block_web_in_mitm,
+        socks_block_web: active.socks_block_web,
         log_level: active.log_level,
         log_format: active.log_format,
         http_access_log: active.http_access_log.clone(),
