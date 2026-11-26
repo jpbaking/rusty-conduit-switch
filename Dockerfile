@@ -22,7 +22,9 @@ RUN apt-get update \
     && apt-get dist-upgrade -y \
     && apt-get install -y --no-install-recommends ca-certificates \
     && rm -rf /var/lib/apt/lists/* \
-    && useradd --system --uid 10001 --no-create-home --shell /usr/sbin/nologin rusty-conduit-switch
+    && groupadd --system --gid 10001 rusty-conduit-switch \
+    && useradd --system --uid 10001 --gid 10001 --no-create-home --shell /usr/sbin/nologin rusty-conduit-switch \
+    && install -d -o 10001 -g 10001 -m 0755 /var/log/rusty-conduit-switch
 
 LABEL org.opencontainers.image.title="rusty-conduit-switch" \
       org.opencontainers.image.description="Lightweight HTTP/HTTPS and SOCKS4/4a/5 Auto Switch proxy server with optional HTTPS MITM inspection" \
@@ -32,8 +34,15 @@ LABEL org.opencontainers.image.title="rusty-conduit-switch" \
 # intend to expose the proxy (v1 has no inbound authentication).
 ENV RUSTY_CONDUIT_SWITCH_BIND=0.0.0.0
 
+# glibc gives every worker thread its own malloc arena, which multiplies memory on hosts with
+# many CPUs (about 8x per open connection); two arenas keep it low with no measurable
+# throughput cost.
+ENV MALLOC_ARENA_MAX=2
+
 EXPOSE 3128 1080
-USER rusty-conduit-switch
+# Numeric, so orchestrators can verify the image never runs as root (Kubernetes
+# runAsNonRoot).
+USER 10001:10001
 ENTRYPOINT ["/usr/local/bin/rusty-conduit-switch"]
 
 # Fast multi-arch packaging target for CI (uses native binaries placed in dist/linux-<arch>/).
