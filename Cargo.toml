@@ -15,7 +15,7 @@ path = "src/main.rs"
 
 [dependencies]
 # Extracted proxy engine (modules moved out in E1b; re-exported from crate root)
-rusty-conduit-engine = { git = "https://github.com/jpbaking/rusty-conduit-engine", tag = "v0.4.0" }
+rusty-conduit-engine = { git = "https://github.com/jpbaking/rusty-conduit-engine", tag = "v0.4.1" }
 
 # Async runtime & utilities
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util", "time", "sync", "signal", "fs", "io-std"] }
