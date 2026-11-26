@@ -97,8 +97,6 @@ pub enum ConfigError {
     CertTtlTooShort(Duration),
     #[error("invalid TCP keepalive setting: {0}")]
     InvalidKeepalive(String),
-    #[error("conflicting destination filter: cannot set both allowlist and blocklist")]
-    ConflictingFilter,
     #[error("--connect-timeout must be greater than 0")]
     ZeroConnectTimeout,
     #[error("invalid profile `{profile}`: {message}")]
@@ -350,9 +348,19 @@ pub struct CliArgs {
     )]
     pub mitm_cert_cache_max: Option<usize>,
 
-    /// Reject HTTP/HTTPS over SOCKS when MITM is ON
+    /// Reject HTTP/HTTPS over SOCKS (works with or without MITM)
     #[arg(
         long,
+        env = "RUSTY_CONDUIT_SWITCH_SOCKS_BLOCK_WEB",
+        action = ArgAction::SetTrue,
+        value_parser = clap::builder::BoolishValueParser::new()
+    )]
+    pub socks_block_web: bool,
+
+    /// Backwards-compatible alias for --socks-block-web
+    #[arg(
+        long = "socks-block-web-in-mitm",
+        hide = true,
         env = "RUSTY_CONDUIT_SWITCH_SOCKS_BLOCK_WEB_IN_MITM",
         action = ArgAction::SetTrue,
         value_parser = clap::builder::BoolishValueParser::new()
@@ -386,8 +394,10 @@ pub struct CliInput {
     pub args: CliArgs,
     /// `--mitm-ca-passphrase` came from an actual command-line argument (not the env var).
     pub passphrase_from_cli: bool,
-    /// `--socks-block-web-in-mitm` was explicitly provided (CLI or env), so it overrides TOML.
+    /// `--socks-block-web` (or alias `--socks-block-web-in-mitm`) was explicitly provided (CLI or env).
     pub socks_block_web_explicit: bool,
+    /// Resolved CLI/env value for `--socks-block-web` when `socks_block_web_explicit` is true.
+    pub socks_block_web_value: bool,
     /// `--watch-config` was explicitly provided (CLI or env), so it overrides TOML.
     pub watch_config_explicit: bool,
 }
@@ -417,10 +427,20 @@ impl CliInput {
                 Some(ValueSource::CommandLine | ValueSource::EnvVariable)
             )
         };
+        let primary_src = matches.value_source("socks_block_web");
+        let legacy_src = matches.value_source("socks_block_web_in_mitm");
+        let (socks_block_web_explicit, socks_block_web_value) = match (primary_src, legacy_src) {
+            (Some(ValueSource::CommandLine), _) => (true, args.socks_block_web),
+            (_, Some(ValueSource::CommandLine)) => (true, args.socks_block_web_in_mitm),
+            (Some(ValueSource::EnvVariable), _) => (true, args.socks_block_web),
+            (_, Some(ValueSource::EnvVariable)) => (true, args.socks_block_web_in_mitm),
+            _ => (false, false),
+        };
         Ok(Self {
             passphrase_from_cli: matches.value_source("mitm_ca_passphrase")
                 == Some(ValueSource::CommandLine),
-            socks_block_web_explicit: explicit("socks_block_web_in_mitm"),
+            socks_block_web_explicit,
+            socks_block_web_value,
             watch_config_explicit: explicit("watch_config"),
             args,
         })
@@ -490,6 +510,8 @@ pub struct FileConfig {
     pub watch_debounce: Option<String>,
     pub connect_timeout: Option<String>,
     pub max_connections: Option<usize>,
+    /// Reject HTTP/HTTPS traffic over SOCKS4/4a/5 (works with or without MITM).
+    pub socks_block_web: Option<bool>,
     #[serde(default)]
     pub tcp_keepalive: FileKeepaliveConfig,
     #[serde(default)]
@@ -670,10 +692,10 @@ impl Config {
             file_parsed::<LogFormat>("logging.format", file.logging.format.as_deref())?;
 
         let socks_block_web_in_mitm = if cli.socks_block_web_explicit {
-            a.socks_block_web_in_mitm
+            cli.socks_block_web_value
         } else {
-            file.mitm
-                .socks_block_web
+            file.socks_block_web
+                .or(file.mitm.socks_block_web)
                 .unwrap_or(d.socks_block_web_in_mitm)
         };
         let watch_config = if cli.watch_config_explicit {
@@ -770,9 +792,6 @@ impl Config {
         }
         if self.mitm_cert_ttl < MIN_MITM_CERT_TTL {
             return Err(ConfigError::CertTtlTooShort(self.mitm_cert_ttl));
-        }
-        if !self.allow.is_empty() && !self.block.is_empty() {
-            return Err(ConfigError::ConflictingFilter);
         }
         if self.connect_timeout.is_zero() {
             return Err(ConfigError::ZeroConnectTimeout);
@@ -894,13 +913,7 @@ impl Config {
 
     /// The configured global destination filter, or `None` when unfiltered.
     pub fn host_filter(&self) -> Option<HostFilter> {
-        if !self.allow.is_empty() {
-            Some(HostFilter::Allow(self.allow.clone()))
-        } else if !self.block.is_empty() {
-            Some(HostFilter::Block(self.block.clone()))
-        } else {
-            None
-        }
+        HostFilter::from_lists(self.allow.clone(), self.block.clone())
     }
 
     /// The configured MITM CA source, or `None` when MITM mode is OFF.
@@ -930,11 +943,6 @@ impl Config {
         !self.bind.is_loopback()
     }
 
-    /// `--socks-block-web-in-mitm` is set but has no effect because MITM is OFF.
-    pub fn socks_block_web_inactive(&self) -> bool {
-        self.socks_block_web_in_mitm && !self.mitm_enabled()
-    }
-
     /// Startup `INFO` notices (security and configuration hints), in display order.
     pub fn notices(&self) -> Vec<String> {
         let mut out = Vec::new();
@@ -950,13 +958,6 @@ impl Config {
                 "NOTICE: --mitm-ca-passphrase was passed on the command line, where it may be \
                  visible to other users and shell history; prefer \
                  RUSTY_CONDUIT_SWITCH_MITM_CA_PASSPHRASE or --mitm-ca-passphrase-file"
-                    .to_string(),
-            );
-        }
-        if self.socks_block_web_inactive() {
-            out.push(
-                "NOTICE: --socks-block-web-in-mitm is inactive because MITM is disabled \
-                 (no CA configured)"
                     .to_string(),
             );
         }
@@ -1798,9 +1799,11 @@ target = "direct"
             load(&["--mitm-cert-ttl", "9s"]),
             Err(ConfigError::CertTtlTooShort(_))
         ));
+        // Combined allow + block produces BlockExcept
+        let cfg = load(&["--allow", "test.domain.net", "--block", "*.domain.net"]).unwrap();
         assert!(matches!(
-            load(&["--allow", "a.example", "--block", "b.example"]),
-            Err(ConfigError::ConflictingFilter)
+            cfg.host_filter(),
+            Some(HostFilter::BlockExcept { .. })
         ));
         assert!(matches!(
             load(&["--connect-timeout", "0s"]),
@@ -1863,8 +1866,12 @@ target = "direct"
             .notices()
             .iter()
             .any(|n| n.contains("--mitm-ca-passphrase")));
+        let cfg = load(&["--socks-block-web"]).unwrap();
+        assert!(cfg.socks_block_web_in_mitm);
+        assert!(cfg.notices().is_empty());
         let cfg = load(&["--socks-block-web-in-mitm"]).unwrap();
-        assert!(cfg.notices().iter().any(|n| n.contains("inactive")));
+        assert!(cfg.socks_block_web_in_mitm);
+        assert!(cfg.notices().is_empty());
         let cfg = load(&["--watch-config"]).unwrap();
         assert!(cfg.notices().iter().any(|n| n.contains("--watch-config")));
     }

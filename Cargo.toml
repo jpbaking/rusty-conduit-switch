@@ -1,6 +1,6 @@
 [package]
 name = "rusty-conduit-switch"
-version = "0.0.1-beta.2"
+version = "0.0.1-beta.3"
 edition = "2021"
 description = "Lightweight cross-platform HTTP/HTTPS and SOCKS4/4a/5 Auto Switch proxy server with optional HTTPS MITM inspection"
 license = "BSD-3-Clause"
@@ -15,7 +15,7 @@ path = "src/main.rs"
 
 [dependencies]
 # Extracted proxy engine (modules moved out in E1b; re-exported from crate root)
-rusty-conduit-engine = { git = "https://github.com/jpbaking/rusty-conduit-engine", tag = "v0.2.0" }
+rusty-conduit-engine = { git = "https://github.com/jpbaking/rusty-conduit-engine", tag = "v0.3.0" }
 
 # Async runtime & utilities
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util", "time", "sync", "signal", "fs", "io-std"] }

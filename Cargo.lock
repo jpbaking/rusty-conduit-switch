@@ -1418,8 +1418,8 @@ checksum = "cf54715a573b99ac80df0bc206da022bcd442c974952c7b9720069370852e21f"
 
 [[package]]
 name = "rusty-conduit-engine"
-version = "0.2.0"
-source = "git+https://github.com/jpbaking/rusty-conduit-engine?tag=v0.2.0#bc05012d78a9e037df0d2e7f7c601974825d1482"
+version = "0.3.0"
+source = "git+https://github.com/jpbaking/rusty-conduit-engine?tag=v0.3.0#2267e2000089cd51be6191ca3d3aeb2b10518513"
 dependencies = [
  "arc-swap",
  "base64 0.22.1",
@@ -1448,7 +1448,7 @@ dependencies = [
 
 [[package]]
 name = "rusty-conduit-switch"
-version = "0.0.1-beta.2"
+version = "0.0.1-beta.3"
 dependencies = [
  "base64 0.22.1",
  "bytes",

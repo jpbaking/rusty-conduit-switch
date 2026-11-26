@@ -129,10 +129,11 @@ pub async fn run(cfg: Config, cli: CliInput, logger: Logger) -> ExitCode {
             logging::format_timestamp(m.ca_not_after),
             humantime::format_duration(cfg.mitm_cert_ttl)
         ));
-        if cfg.socks_block_web_in_mitm {
-            logger.info("SOCKS web blocking enabled: HTTP/HTTPS over SOCKS is rejected");
-        }
-        engines = engines.with_mitm(Arc::new(m.interceptor.clone()), cfg.socks_block_web_in_mitm);
+        engines = engines.with_mitm(Arc::new(m.interceptor.clone()), false);
+    }
+    if cfg.socks_block_web_in_mitm {
+        logger.info("SOCKS web blocking enabled: HTTP/HTTPS over SOCKS is rejected");
+        engines = engines.with_socks_block_web();
     }
     let handlers: Arc<dyn ProtocolHandlers> = Arc::new(engines);
     let server = match Server::from_options(&cfg.server_options(), handlers, logger.clone()).await {
