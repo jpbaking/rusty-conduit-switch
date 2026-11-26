@@ -55,13 +55,13 @@ pub const DEFAULT_SOCKS_PORT: u16 = 1080;
 /// Default debounce window for config file change events.
 pub const DEFAULT_WATCH_DEBOUNCE: Duration = Duration::from_millis(300);
 /// Default cap on concurrent client connections (`0` = unlimited).
-pub const DEFAULT_MAX_CONNECTIONS: usize = 1024;
+pub const DEFAULT_MAX_CONNECTIONS: usize = 4096;
 /// Default in-memory TTL for generated MITM leaf certificates.
 pub const DEFAULT_MITM_CERT_TTL: Duration = Duration::from_secs(60 * 60);
 /// Smallest accepted MITM leaf certificate TTL.
 pub const MIN_MITM_CERT_TTL: Duration = Duration::from_secs(10);
 /// Default cap on cached MITM leaf certificates (`0` = unlimited).
-pub const DEFAULT_MITM_CERT_CACHE_MAX: usize = 4096;
+pub const DEFAULT_MITM_CERT_CACHE_MAX_ENTRIES: usize = 10_240;
 /// Largest accepted TCP keepalive idle time / probe interval (Linux caps both at 32767s).
 pub const MAX_TCP_KEEPALIVE_DURATION: Duration = Duration::from_secs(32_767);
 /// Largest accepted TCP keepalive probe count (Linux caps `TCP_KEEPCNT` at 127).
@@ -206,7 +206,7 @@ pub struct CliArgs {
     #[command(subcommand)]
     pub command: Option<Command>,
 
-    /// Path to the TOML configuration file
+    /// Optional TOML configuration file path
     #[arg(
         long,
         value_name = "PATH",
@@ -227,7 +227,7 @@ pub struct CliArgs {
     /// Debounce window for config file change events [default: 300ms]
     #[arg(
         long,
-        value_name = "DUR",
+        value_name = "DURATION",
         env = "RUSTY_CONDUIT_SWITCH_WATCH_DEBOUNCE",
         value_parser = humantime::parse_duration
     )]
@@ -248,35 +248,44 @@ pub struct CliArgs {
     /// Upstream TCP + proxy handshake timeout per attempt [default: 10s]
     #[arg(
         long,
-        value_name = "DUR",
+        value_name = "DURATION",
         env = "RUSTY_CONDUIT_SWITCH_CONNECT_TIMEOUT",
         value_parser = humantime::parse_duration
     )]
     pub connect_timeout: Option<Duration>,
 
-    /// Maximum concurrent client connections, 0 = unlimited [default: 1024]
+    /// Maximum concurrent client connections; excess connections are closed immediately, 0 = unlimited [default: 4096]
     #[arg(long, value_name = "N", env = "RUSTY_CONDUIT_SWITCH_MAX_CONNECTIONS")]
     pub max_connections: Option<usize>,
 
-    /// TCP keepalive idle time on client and upstream sockets, 0s disables [default: 60s]
+    /// Idle time before TCP keepalive probes start on client and upstream sockets, 0 = disabled [default: 60s]
     #[arg(
         long,
-        value_name = "DUR",
+        value_name = "DURATION",
+        env = "RUSTY_CONDUIT_SWITCH_TCP_KEEPALIVE",
+        value_parser = humantime::parse_duration
+    )]
+    pub tcp_keepalive: Option<Duration>,
+
+    /// Deprecated alias for --tcp-keepalive
+    #[arg(
+        long = "tcp-keepalive-idle",
+        hide = true,
         env = "RUSTY_CONDUIT_SWITCH_TCP_KEEPALIVE_IDLE",
         value_parser = humantime::parse_duration
     )]
     pub tcp_keepalive_idle: Option<Duration>,
 
-    /// Interval between TCP keepalive probes [default: 10s]
+    /// Time between unanswered TCP keepalive probes [default: 10s]
     #[arg(
         long,
-        value_name = "DUR",
+        value_name = "DURATION",
         env = "RUSTY_CONDUIT_SWITCH_TCP_KEEPALIVE_INTERVAL",
         value_parser = humantime::parse_duration
     )]
     pub tcp_keepalive_interval: Option<Duration>,
 
-    /// Unanswered TCP keepalive probes before dropping the socket [default: 5]
+    /// Unanswered TCP keepalive probes before the connection is closed [default: 5]
     #[arg(
         long,
         value_name = "N",
@@ -284,37 +293,39 @@ pub struct CliArgs {
     )]
     pub tcp_keepalive_retries: Option<u32>,
 
-    /// Global destination allowlist (IP, CIDR, FQDN, or *.domain); repeatable or comma-separated
+    /// Allowlist of destinations (IP, CIDR, FQDN, or *.domain); repeatable or comma-separated.
+    /// When combined with --block, serves as exceptions to the blocklist.
     #[arg(
         long,
-        value_name = "LIST",
+        value_name = "RULE",
         value_delimiter = ',',
         env = "RUSTY_CONDUIT_SWITCH_ALLOW"
     )]
     pub allow: Vec<FilterRule>,
 
-    /// Global destination blocklist (mutually exclusive with --allow)
+    /// Blocklist of destinations (IP, CIDR, FQDN, or *.domain); repeatable or comma-separated.
+    /// Combine with --allow to carve out exceptions.
     #[arg(
         long,
-        value_name = "LIST",
+        value_name = "RULE",
         value_delimiter = ',',
         env = "RUSTY_CONDUIT_SWITCH_BLOCK"
     )]
     pub block: Vec<FilterRule>,
 
-    /// PEM CA certificate (enables MITM together with --mitm-ca-key)
+    /// Path to PEM-encoded CA certificate (enables MITM together with --mitm-ca-key)
     #[arg(long, value_name = "PATH", env = "RUSTY_CONDUIT_SWITCH_MITM_CA_CERT")]
     pub mitm_ca_cert: Option<PathBuf>,
 
-    /// PEM CA private key
+    /// Path to PEM-encoded CA private key
     #[arg(long, value_name = "PATH", env = "RUSTY_CONDUIT_SWITCH_MITM_CA_KEY")]
     pub mitm_ca_key: Option<PathBuf>,
 
-    /// PKCS#12 CA bundle (enables MITM)
+    /// Path to PKCS#12 (.p12/.pfx) CA bundle (enables MITM)
     #[arg(long, value_name = "PATH", env = "RUSTY_CONDUIT_SWITCH_MITM_CA_P12")]
     pub mitm_ca_p12: Option<PathBuf>,
 
-    /// CA passphrase (prefer the env var or a passphrase file)
+    /// Passphrase for the PKCS#12 bundle or encrypted PEM key (prefer the env var or a passphrase file)
     #[arg(
         long,
         value_name = "STR",
@@ -331,24 +342,32 @@ pub struct CliArgs {
     )]
     pub mitm_ca_passphrase_file: Option<PathBuf>,
 
-    /// In-memory TTL for signed MITM leaf certs [default: 1h]
+    /// In-memory TTL for generated MITM leaf certs, e.g. 30m, 1h, 3600s [default: 1h]
     #[arg(
         long,
-        value_name = "DUR",
+        value_name = "DURATION",
         env = "RUSTY_CONDUIT_SWITCH_MITM_CERT_TTL",
         value_parser = humantime::parse_duration
     )]
     pub mitm_cert_ttl: Option<Duration>,
 
-    /// Max entries in the MITM leaf cert cache, 0 = unlimited [default: 4096]
+    /// Maximum cached MITM leaf certificates; expired then oldest entries are evicted, 0 = unlimited [default: 10240]
     #[arg(
         long,
         value_name = "N",
+        env = "RUSTY_CONDUIT_SWITCH_MITM_CERT_CACHE_MAX_ENTRIES"
+    )]
+    pub mitm_cert_cache_max_entries: Option<usize>,
+
+    /// Deprecated alias for --mitm-cert-cache-max-entries
+    #[arg(
+        long = "mitm-cert-cache-max",
+        hide = true,
         env = "RUSTY_CONDUIT_SWITCH_MITM_CERT_CACHE_MAX"
     )]
     pub mitm_cert_cache_max: Option<usize>,
 
-    /// Reject HTTP/HTTPS over SOCKS (works with or without MITM)
+    /// Reject HTTP/HTTPS traffic over SOCKS4/4a/5 (works with or without MITM)
     #[arg(
         long,
         env = "RUSTY_CONDUIT_SWITCH_SOCKS_BLOCK_WEB",
@@ -400,6 +419,8 @@ pub struct CliInput {
     pub socks_block_web_value: bool,
     /// `--watch-config` was explicitly provided (CLI or env), so it overrides TOML.
     pub watch_config_explicit: bool,
+    /// Deprecation notices produced by legacy CLI flags or environment variables.
+    pub deprecated: Vec<String>,
 }
 
 impl CliInput {
@@ -420,7 +441,34 @@ impl CliInput {
     }
 
     fn from_matches(matches: &ArgMatches) -> Result<Self, clap::Error> {
-        let args = CliArgs::from_arg_matches(matches)?;
+        let mut args = CliArgs::from_arg_matches(matches)?;
+        let mut deprecated = Vec::new();
+        if let Some(legacy_src) = matches.value_source("tcp_keepalive_idle") {
+            deprecated.push(
+                "NOTICE: --tcp-keepalive-idle / RUSTY_CONDUIT_SWITCH_TCP_KEEPALIVE_IDLE is deprecated; use --tcp-keepalive / RUSTY_CONDUIT_SWITCH_TCP_KEEPALIVE"
+                    .to_string(),
+            );
+            let primary_src = matches.value_source("tcp_keepalive");
+            if primary_src.is_none()
+                || (primary_src == Some(ValueSource::EnvVariable)
+                    && legacy_src == ValueSource::CommandLine)
+            {
+                args.tcp_keepalive = args.tcp_keepalive_idle;
+            }
+        }
+        if let Some(legacy_src) = matches.value_source("mitm_cert_cache_max") {
+            deprecated.push(
+                "NOTICE: --mitm-cert-cache-max / RUSTY_CONDUIT_SWITCH_MITM_CERT_CACHE_MAX is deprecated; use --mitm-cert-cache-max-entries / RUSTY_CONDUIT_SWITCH_MITM_CERT_CACHE_MAX_ENTRIES"
+                    .to_string(),
+            );
+            let primary_src = matches.value_source("mitm_cert_cache_max_entries");
+            if primary_src.is_none()
+                || (primary_src == Some(ValueSource::EnvVariable)
+                    && legacy_src == ValueSource::CommandLine)
+            {
+                args.mitm_cert_cache_max_entries = args.mitm_cert_cache_max;
+            }
+        }
         let explicit = |id: &str| {
             matches!(
                 matches.value_source(id),
@@ -442,6 +490,7 @@ impl CliInput {
             socks_block_web_explicit,
             socks_block_web_value,
             watch_config_explicit: explicit("watch_config"),
+            deprecated,
             args,
         })
     }
@@ -456,7 +505,7 @@ impl CliInput {
 // family (`Inbound`) are defined in `rusty-conduit-engine` and re-exported at the top of this
 // file, so the TOML structs below (`FileConfig` etc.) reference them unchanged.
 
-/// `[tcp_keepalive]` table.
+/// Deprecated `[tcp_keepalive]` table; use the top-level keys.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct FileKeepaliveConfig {
@@ -466,7 +515,31 @@ pub struct FileKeepaliveConfig {
     pub retries: Option<u32>,
 }
 
-/// `[filter]` table.
+/// `tcp_keepalive`: a duration string (canonical) or the deprecated `[tcp_keepalive]` table.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FileKeepaliveField {
+    Idle(String),
+    Table(FileKeepaliveConfig),
+}
+
+impl<'de> Deserialize<'de> for FileKeepaliveField {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        use serde::de::Error as _;
+        match toml::Value::deserialize(deserializer)? {
+            toml::Value::String(s) => Ok(Self::Idle(s)),
+            v @ toml::Value::Table(_) => v
+                .try_into::<FileKeepaliveConfig>()
+                .map(Self::Table)
+                .map_err(D::Error::custom),
+            other => Err(D::Error::custom(format!(
+                "expected a duration string such as \"60s\", found {}",
+                other.type_str()
+            ))),
+        }
+    }
+}
+
+/// Deprecated `[filter]` table; use top-level `allow` / `block`.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct FileFilterConfig {
@@ -485,6 +558,7 @@ pub struct FileMitmConfig {
     pub ca_passphrase_file: Option<PathBuf>,
     /// Human-readable duration such as `30m`, `1h`, or `3600s`.
     pub cert_ttl: Option<String>,
+    pub cert_cache_max_entries: Option<usize>,
     pub cert_cache_max: Option<usize>,
     pub socks_block_web: Option<bool>,
 }
@@ -512,8 +586,11 @@ pub struct FileConfig {
     pub max_connections: Option<usize>,
     /// Reject HTTP/HTTPS traffic over SOCKS4/4a/5 (works with or without MITM).
     pub socks_block_web: Option<bool>,
-    #[serde(default)]
-    pub tcp_keepalive: FileKeepaliveConfig,
+    pub tcp_keepalive: Option<FileKeepaliveField>,
+    pub tcp_keepalive_interval: Option<String>,
+    pub tcp_keepalive_retries: Option<u32>,
+    pub allow: Option<Vec<String>>,
+    pub block: Option<Vec<String>>,
     #[serde(default)]
     pub filter: FileFilterConfig,
     #[serde(default)]
@@ -565,9 +642,9 @@ pub struct Config {
     pub tcp_keepalive_idle: Duration,
     pub tcp_keepalive_interval: Duration,
     pub tcp_keepalive_retries: u32,
-    /// Destination allowlist rules (mutually exclusive with `block`).
+    /// Destination allowlist rules (exceptions to `block` when both are set).
     pub allow: Vec<FilterRule>,
-    /// Destination blocklist rules (mutually exclusive with `allow`).
+    /// Destination blocklist rules (combine with `allow` to carve out exceptions).
     pub block: Vec<FilterRule>,
     pub mitm_ca_cert: Option<PathBuf>,
     pub mitm_ca_key: Option<PathBuf>,
@@ -587,6 +664,8 @@ pub struct Config {
     pub routing: RoutingConfig,
     /// The passphrase was supplied as a CLI argument (triggers an `INFO` notice).
     pub passphrase_from_cli: bool,
+    /// Deprecation notices triggered by legacy flags or env vars.
+    pub deprecations: Vec<String>,
 }
 
 impl fmt::Debug for Config {
@@ -623,6 +702,7 @@ impl fmt::Debug for Config {
             .field("profiles", &self.profiles)
             .field("routing", &self.routing)
             .field("passphrase_from_cli", &self.passphrase_from_cli)
+            .field("deprecations", &self.deprecations)
             .finish()
     }
 }
@@ -649,7 +729,7 @@ impl Default for Config {
             mitm_ca_passphrase: None,
             mitm_ca_passphrase_file: None,
             mitm_cert_ttl: DEFAULT_MITM_CERT_TTL,
-            mitm_cert_cache_max: DEFAULT_MITM_CERT_CACHE_MAX,
+            mitm_cert_cache_max: DEFAULT_MITM_CERT_CACHE_MAX_ENTRIES,
             socks_block_web_in_mitm: false,
             log_level: LogLevel::Info,
             log_format: LogFormat::Text,
@@ -658,6 +738,7 @@ impl Default for Config {
             profiles: BTreeMap::new(),
             routing: RoutingConfig::default(),
             passphrase_from_cli: false,
+            deprecations: Vec::new(),
         }
     }
 }
@@ -680,11 +761,24 @@ impl Config {
         let a = cli.args;
 
         let file_ttl = file_duration("mitm.cert_ttl", file.mitm.cert_ttl.as_deref())?;
-        let file_idle = file_duration("tcp_keepalive.idle", file.tcp_keepalive.idle.as_deref())?;
-        let file_interval = file_duration(
-            "tcp_keepalive.interval",
-            file.tcp_keepalive.interval.as_deref(),
-        )?;
+        let (file_idle, table_interval, table_retries, used_keepalive_table) =
+            match file.tcp_keepalive {
+                Some(FileKeepaliveField::Idle(s)) => {
+                    (file_duration("tcp_keepalive", Some(&s))?, None, None, false)
+                }
+                Some(FileKeepaliveField::Table(t)) => (
+                    file_duration("tcp_keepalive.idle", t.idle.as_deref())?,
+                    t.interval,
+                    t.retries,
+                    true,
+                ),
+                None => (None, None, None, false),
+            };
+        let file_interval = match file.tcp_keepalive_interval.as_deref() {
+            Some(s) => file_duration("tcp_keepalive_interval", Some(s))?,
+            None => file_duration("tcp_keepalive.interval", table_interval.as_deref())?,
+        };
+        let file_retries = file.tcp_keepalive_retries.or(table_retries);
         let file_connect = file_duration("connect_timeout", file.connect_timeout.as_deref())?;
         let file_debounce = file_duration("watch_debounce", file.watch_debounce.as_deref())?;
         let file_level = file_parsed::<LogLevel>("logging.level", file.logging.level.as_deref())?;
@@ -703,8 +797,15 @@ impl Config {
         } else {
             file.watch_config.unwrap_or(d.watch_config)
         };
-        let file_allow = file_filter_rules("filter.allow", file.filter.allow)?;
-        let file_block = file_filter_rules("filter.block", file.filter.block)?;
+        let used_filter_table = file.filter.allow.is_some() || file.filter.block.is_some();
+        let file_allow = match file.allow {
+            Some(v) => file_filter_rules("allow", Some(v))?,
+            None => file_filter_rules("filter.allow", file.filter.allow)?,
+        };
+        let file_block = match file.block {
+            Some(v) => file_filter_rules("block", Some(v))?,
+            None => file_filter_rules("filter.block", file.filter.block)?,
+        };
         let allow = if a.allow.is_empty() {
             file_allow
         } else {
@@ -715,6 +816,25 @@ impl Config {
         } else {
             a.block
         };
+        let mut deprecations = cli.deprecated;
+        if used_keepalive_table {
+            deprecations.push(
+                "NOTICE: TOML [tcp_keepalive] table is deprecated; use top-level tcp_keepalive, tcp_keepalive_interval, tcp_keepalive_retries"
+                    .to_string(),
+            );
+        }
+        if used_filter_table {
+            deprecations.push(
+                "NOTICE: TOML [filter] table is deprecated; use top-level allow and block"
+                    .to_string(),
+            );
+        }
+        if file.mitm.cert_cache_max.is_some() {
+            deprecations.push(
+                "NOTICE: TOML mitm.cert_cache_max is deprecated; use mitm.cert_cache_max_entries"
+                    .to_string(),
+            );
+        }
 
         Ok(Config {
             config_path: a.config,
@@ -735,7 +855,7 @@ impl Config {
                 .or(file.max_connections)
                 .unwrap_or(d.max_connections),
             tcp_keepalive_idle: a
-                .tcp_keepalive_idle
+                .tcp_keepalive
                 .or(file_idle)
                 .unwrap_or(d.tcp_keepalive_idle),
             tcp_keepalive_interval: a
@@ -744,7 +864,7 @@ impl Config {
                 .unwrap_or(d.tcp_keepalive_interval),
             tcp_keepalive_retries: a
                 .tcp_keepalive_retries
-                .or(file.tcp_keepalive.retries)
+                .or(file_retries)
                 .unwrap_or(d.tcp_keepalive_retries),
             allow,
             block,
@@ -755,7 +875,8 @@ impl Config {
             mitm_ca_passphrase_file: a.mitm_ca_passphrase_file.or(file.mitm.ca_passphrase_file),
             mitm_cert_ttl: a.mitm_cert_ttl.or(file_ttl).unwrap_or(d.mitm_cert_ttl),
             mitm_cert_cache_max: a
-                .mitm_cert_cache_max
+                .mitm_cert_cache_max_entries
+                .or(file.mitm.cert_cache_max_entries)
                 .or(file.mitm.cert_cache_max)
                 .unwrap_or(d.mitm_cert_cache_max),
             socks_block_web_in_mitm,
@@ -766,6 +887,7 @@ impl Config {
             profiles: file.profiles,
             routing: file.routing,
             passphrase_from_cli: cli.passphrase_from_cli,
+            deprecations,
         })
     }
 
@@ -853,7 +975,7 @@ impl Config {
         let fmt = |d: Duration| humantime::format_duration(d).to_string();
         if !secs.contains(&self.tcp_keepalive_idle) {
             return Err(ConfigError::InvalidKeepalive(format!(
-                "--tcp-keepalive-idle must be 0s (disabled) or between 1s and {}s (got {})",
+                "--tcp-keepalive must be 0s (disabled) or between 1s and {}s (got {})",
                 MAX_TCP_KEEPALIVE_DURATION.as_secs(),
                 fmt(self.tcp_keepalive_idle)
             )));
@@ -967,6 +1089,7 @@ impl Config {
                     .to_string(),
             );
         }
+        out.extend(self.deprecations.iter().cloned());
         out
     }
 
@@ -1012,7 +1135,7 @@ impl Config {
         format!(
             "bind={} http_port={} socks_port={} multiplexed={} max_connections={} \
              connect_timeout={} tcp_keepalive={keepalive} mitm={mitm} mitm_cert_ttl={} \
-             mitm_cert_cache_max={} socks_block_web_in_mitm={} log_level={} log_format={} \
+             mitm_cert_cache_max_entries={} socks_block_web_in_mitm={} log_level={} log_format={} \
              http_access_log={} socks_log={} profiles={} rules={} watch_config={} config={}{filter}",
             self.bind,
             port(self.http_port),
@@ -1152,9 +1275,9 @@ mod tests {
         assert_eq!(cfg.socks_port, 1080);
         assert_eq!(cfg.connect_timeout, Duration::from_secs(10));
         assert_eq!(cfg.watch_debounce, Duration::from_millis(300));
-        assert_eq!(cfg.max_connections, 1024);
+        assert_eq!(cfg.max_connections, 4096);
         assert_eq!(cfg.mitm_cert_ttl, Duration::from_secs(3600));
-        assert_eq!(cfg.mitm_cert_cache_max, 4096);
+        assert_eq!(cfg.mitm_cert_cache_max, 10_240);
         assert_eq!(
             cfg.tcp_keepalive_settings(),
             Some(KeepaliveSettings::DEFAULT)
@@ -1234,6 +1357,97 @@ socks_log = "/file/socks.log"
     }
 
     #[test]
+    fn flat_and_deprecated_toml_keys() {
+        let _env = EnvGuard::new(&[]);
+
+        // (a) flat form
+        let flat = from_toml(
+            "tcp_keepalive = \"30s\"\n\
+             tcp_keepalive_interval = \"5s\"\n\
+             tcp_keepalive_retries = 2\n\
+             allow = [\"*.ok.example\"]\n\
+             [mitm]\n\
+             cert_cache_max_entries = 11\n",
+        )
+        .unwrap();
+        assert_eq!(
+            flat.tcp_keepalive_settings(),
+            Some(KeepaliveSettings {
+                idle: Duration::from_secs(30),
+                interval: Duration::from_secs(5),
+                retries: 2,
+            })
+        );
+        assert_eq!(flat.host_filter().unwrap().mode_str(), "allow");
+        assert_eq!(flat.mitm_cert_cache_max, 11);
+        assert!(flat.notices().is_empty());
+
+        // (b) old table form yields the same values plus the three NOTICEs
+        let legacy = from_toml(
+            "[tcp_keepalive]\n\
+             idle = \"30s\"\n\
+             interval = \"5s\"\n\
+             retries = 2\n\
+             [filter]\n\
+             allow = [\"*.ok.example\"]\n\
+             [mitm]\n\
+             cert_cache_max = 11\n",
+        )
+        .unwrap();
+        assert_eq!(
+            legacy.tcp_keepalive_settings(),
+            flat.tcp_keepalive_settings()
+        );
+        assert_eq!(legacy.host_filter().unwrap().mode_str(), "allow");
+        assert_eq!(legacy.mitm_cert_cache_max, 11);
+        let notices = legacy.notices();
+        assert!(notices.iter().any(|n| n == "NOTICE: TOML [tcp_keepalive] table is deprecated; use top-level tcp_keepalive, tcp_keepalive_interval, tcp_keepalive_retries"));
+        assert!(notices.iter().any(
+            |n| n == "NOTICE: TOML [filter] table is deprecated; use top-level allow and block"
+        ));
+        assert!(notices.iter().any(|n| n
+            == "NOTICE: TOML mitm.cert_cache_max is deprecated; use mitm.cert_cache_max_entries"));
+
+        // (c) flat tcp_keepalive + tcp_keepalive_interval without [filter]
+        let flat_ka = from_toml(
+            "tcp_keepalive = \"30s\"\n\
+             tcp_keepalive_interval = \"7s\"\n",
+        )
+        .unwrap();
+        assert_eq!(flat_ka.tcp_keepalive_idle, Duration::from_secs(30));
+        assert_eq!(flat_ka.tcp_keepalive_interval, Duration::from_secs(7));
+        assert!(flat_ka.notices().is_empty());
+
+        // (d) tcp_keepalive = "x" errors with a message naming tcp_keepalive
+        let err = from_toml("tcp_keepalive = \"x\"\n").unwrap_err();
+        assert!(
+            matches!(
+                &err,
+                ConfigError::InvalidFileValue {
+                    key: "tcp_keepalive",
+                    ..
+                }
+            ),
+            "{err}"
+        );
+        assert!(err.to_string().contains("tcp_keepalive"), "{err}");
+
+        let err = FileConfig::from_toml_str(
+            "[tcp_keepalive]\nidle = \"1m\"\nbogus = 1\n",
+            Path::new("x.toml"),
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("unknown field"), "{err}");
+
+        let err =
+            FileConfig::from_toml_str("tcp_keepalive = 5\n", Path::new("x.toml")).unwrap_err();
+        assert!(
+            err.to_string().contains("expected a duration string"),
+            "{err}"
+        );
+    }
+
+    #[test]
     fn env_overrides_toml() {
         let path = temp_file(FULL_TOML);
         let _env = EnvGuard::new(&[
@@ -1271,6 +1485,30 @@ socks_log = "/file/socks.log"
         assert_eq!(cfg.log_format, LogFormat::Json);
         assert_eq!(cfg.max_connections, 77);
         fs::remove_file(path).ok();
+    }
+
+    #[test]
+    fn deprecated_cli_aliases_and_precedence() {
+        let _env = EnvGuard::new(&[]);
+
+        // (a) --tcp-keepalive-idle 0s sets tcp_keepalive_idle to zero and emits deprecation NOTICE
+        let cfg = load(&["--tcp-keepalive-idle", "0s"]).unwrap();
+        assert!(cfg.tcp_keepalive_idle.is_zero());
+        assert!(cfg.notices().iter().any(|n| n == "NOTICE: --tcp-keepalive-idle / RUSTY_CONDUIT_SWITCH_TCP_KEEPALIVE_IDLE is deprecated; use --tcp-keepalive / RUSTY_CONDUIT_SWITCH_TCP_KEEPALIVE"));
+
+        // (b) --mitm-cert-cache-max 7 sets mitm_cert_cache_max == 7 and emits deprecation NOTICE
+        let cfg = load(&["--mitm-cert-cache-max", "7"]).unwrap();
+        assert_eq!(cfg.mitm_cert_cache_max, 7);
+        assert!(cfg.notices().iter().any(|n| n == "NOTICE: --mitm-cert-cache-max / RUSTY_CONDUIT_SWITCH_MITM_CERT_CACHE_MAX is deprecated; use --mitm-cert-cache-max-entries / RUSTY_CONDUIT_SWITCH_MITM_CERT_CACHE_MAX_ENTRIES"));
+
+        // (c) --tcp-keepalive 30s --tcp-keepalive-idle 5s keeps 30s
+        let cfg = load(&["--tcp-keepalive", "30s", "--tcp-keepalive-idle", "5s"]).unwrap();
+        assert_eq!(cfg.tcp_keepalive_idle, Duration::from_secs(30));
+
+        // (d) --tcp-keepalive 0s produces no deprecation NOTICE
+        let cfg = load(&["--tcp-keepalive", "0s"]).unwrap();
+        assert!(cfg.tcp_keepalive_idle.is_zero());
+        assert!(cfg.notices().is_empty());
     }
 
     #[test]

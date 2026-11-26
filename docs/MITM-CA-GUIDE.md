@@ -41,7 +41,7 @@ This guide covers:
 - **Some applications pin certificates** (banking apps, OS update services, and some
   messengers). They refuse intercepted connections. v1 cannot bypass MITM for specific
   domains; for those clients, use an instance without MITM, or SOCKS (unless you enable
-  `--socks-block-web-in-mitm`).
+  `--socks-block-web`).
 - **v1 has no proxy authentication.** Keep `--bind` on loopback (the default), or restrict
   access with a firewall.
 
@@ -154,7 +154,7 @@ Or set the CA in the TOML config file:
 ca_p12 = "/etc/rusty-conduit-switch/ca.p12"
 ca_passphrase_file = "/etc/rusty-conduit-switch/ca.pass"
 cert_ttl = "1h"
-cert_cache_max = 4096
+cert_cache_max_entries = 10240
 ```
 
 On success the startup log shows:
@@ -190,8 +190,8 @@ client connection may go through different upstreams. Without URL rules, the rou
 once per tunnel from the host name and port. See the [User Guide](USER-GUIDE.md#6-routing-rules).
 
 SOCKS connections are never intercepted; they stay transparent TCP tunnels. Start the server
-with `--socks-block-web-in-mitm` (or `socks_block_web = true` in `[mitm]`) to reject HTTP and
-TLS web traffic over SOCKS while MITM is on, so clients cannot bypass inspection that way.
+with `--socks-block-web` (or `socks_block_web = true`) to reject HTTP and
+TLS web traffic over SOCKS, so clients cannot bypass inspection that way.
 
 The CA and every `[mitm]` setting are read at startup only. Hot-reload does not change them;
 restart the server to switch CAs.
@@ -337,7 +337,7 @@ Each leaf certificate rusty-conduit-switch presents has:
 - validity from `now − 5m` to `now + --mitm-cert-ttl + 5m`.
 
 Leaves are kept in memory only, for at most `--mitm-cert-ttl` and at most
-`--mitm-cert-cache-max` entries, and are never written to disk.
+`--mitm-cert-cache-max-entries` entries, and are never written to disk.
 
 ---
 

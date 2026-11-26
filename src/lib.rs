@@ -15,6 +15,7 @@
 //! commented TOML config ([`import`]).
 
 pub mod config;
+pub mod fdlimit;
 pub mod import;
 pub mod reload;
 
@@ -80,6 +81,7 @@ pub fn all_notices(cfg: &Config) -> Vec<String> {
 /// the process exit code. Must be called inside a Tokio runtime.
 pub async fn run(cfg: Config, cli: CliInput, logger: Logger) -> ExitCode {
     log_startup(&cfg, &logger);
+    fdlimit::apply(&logger, cfg.max_connections, "--max-connections");
 
     let access = match AccessLogger::start(
         AccessLogConfig::new(

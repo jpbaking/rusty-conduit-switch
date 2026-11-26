@@ -1,57 +1,141 @@
-# phase-0004 — Inbound HTTP/HTTPS and SOCKS4/4a/5 wired to router
+# phase-0004 — CLI family contract test
 
 - Status: done
 - Owner: executor
-- Depends on: phase-0003
-- Goal: Implement inbound HTTP forward proxy, non-MITM HTTPS CONNECT tunnel, and SOCKS4/4a/5 server handlers wired through the Auto Switch `Router` and `UpstreamDialer`, plus single-port mux and end-to-end cross-protocol tests.
-- Done when: `cargo fmt --check && cargo clippy --all-targets -- -D warnings && cargo test` exits 0 with `tests/socks_proxy.rs` and `tests/mux_port.rs` passing for HTTP, HTTPS CONNECT, SOCKS4/4a/5, plain-HTTP-to-HTTP-upstream absolute-form forwarding, cross-protocol routing, failover, block responses, and single-port mux.
-- Pattern to follow: ../rusty-conduit/src/http/mod.rs:1, ../rusty-conduit/src/http/forward.rs:1, ../rusty-conduit/src/http/tunnel.rs:1, ../rusty-conduit/src/socks/mod.rs:1, ../rusty-conduit/src/socks/v4.rs:1, ../rusty-conduit/src/socks/v5.rs:1, ../rusty-conduit/tests/socks_proxy.rs:1, ../rusty-conduit/tests/mux_port.rs:1
+- Depends on: phase-0001, phase-0002, phase-0003
+- Goal: Add `tests/cli_contract.rs`, which fails if any shared flag's name, value name, env var, help text, or default drifts from the family contract.
+- Done when: `cargo test --locked --test cli_contract` passes 3 tests.
+- Pattern to follow: `tests/routing_rules.rs:890-926` (running the built binary with `env!("CARGO_BIN_EXE_rusty-conduit-switch")` and capturing stdout, stderr, and exit code)
 
 ## Context
-Read `docs/MASTER-PLAN.md` Section 2 (Ports & Multiplexing, Plain HTTP → HTTP Upstream, Failover Chains) and Section 9 (Logging Additions).
-When a plain HTTP request (`http://...`) routes to an `http` or `https` upstream profile, `src/http/forward.rs` MUST forward in absolute-form (`GET http://host:port/path HTTP/1.1` + `Proxy-Authorization` if configured) directly to the upstream proxy rather than issuing `CONNECT` to port 80. When plain HTTP routes to `direct`, `socks5`, or `socks4a`, it uses `UpstreamDialer` and sends origin-form HTTP.
-`RouteBlocked` maps to HTTP `403 Forbidden`, SOCKS5 reply `0x02`, and SOCKS4 reply `0x5B`. Every HTTP/HTTPS and SOCKS log entry must include `rule=`, `profile=`, and redacted `upstream=`.
-For `RouteRequest.scheme`: plain HTTP passes `Some("http")`, HTTPS `CONNECT` passes `Some("https")`, and SOCKS passes `None`.
+The same contract table, apart from the env prefix and a few tool-specific wording variants, goes into rusty-conduit and rusty-conduit-ssh, and a workspace script later compares the three. The table below is the specification: if a row fails, fix the doc comment in `src/config.rs`, never the table. `tests/DOX.md` applies: each test file has its own helpers, scratch files go under `std::env::temp_dir()`, no network.
+Create `tests/cli_contract.rs` with exactly this content:
+```rust
+//! Family CLI contract: shared flags keep the same names, value names, env vars, help
+//! text, and defaults across rusty-conduit, rusty-conduit-ssh, and rusty-conduit-switch.
+
+use clap::CommandFactory;
+use rusty_conduit_switch::config::{
+    CliArgs, DEFAULT_MAX_CONNECTIONS, DEFAULT_MITM_CERT_CACHE_MAX_ENTRIES,
+};
+use std::process::Command;
+
+const ENV_PREFIX: &str = "RUSTY_CONDUIT_SWITCH_";
+
+/// (long flag, value name, rendered help)
+const SHARED_FLAGS: &[(&str, Option<&str>, &str)] = &[
+    ("config", Some("PATH"), "Optional TOML configuration file path"),
+    ("bind", Some("IP"), "IPv4 or IPv6 address to bind listeners to [default: 127.0.0.1]"),
+    ("http-port", Some("PORT"), "HTTP/HTTPS proxy port, 0 to disable [default: 3128]"),
+    ("socks-port", Some("PORT"), "SOCKS4/4a/5 proxy port, 0 to disable [default: 1080]"),
+    ("max-connections", Some("N"), "Maximum concurrent client connections; excess connections are closed immediately, 0 = unlimited [default: 4096]"),
+    ("tcp-keepalive", Some("DURATION"), "Idle time before TCP keepalive probes start on client and upstream sockets, 0 = disabled [default: 60s]"),
+    ("tcp-keepalive-interval", Some("DURATION"), "Time between unanswered TCP keepalive probes [default: 10s]"),
+    ("tcp-keepalive-retries", Some("N"), "Unanswered TCP keepalive probes before the connection is closed [default: 5]"),
+    ("allow", Some("RULE"), "Allowlist of destinations (IP, CIDR, FQDN, or *.domain); repeatable or comma-separated. When combined with --block, serves as exceptions to the blocklist"),
+    ("block", Some("RULE"), "Blocklist of destinations (IP, CIDR, FQDN, or *.domain); repeatable or comma-separated. Combine with --allow to carve out exceptions"),
+    ("mitm-ca-cert", Some("PATH"), "Path to PEM-encoded CA certificate (enables MITM together with --mitm-ca-key)"),
+    ("mitm-ca-key", Some("PATH"), "Path to PEM-encoded CA private key"),
+    ("mitm-ca-p12", Some("PATH"), "Path to PKCS#12 (.p12/.pfx) CA bundle (enables MITM)"),
+    ("mitm-ca-passphrase", Some("STR"), "Passphrase for the PKCS#12 bundle or encrypted PEM key (prefer the env var or a passphrase file)"),
+    ("mitm-ca-passphrase-file", Some("PATH"), "File containing the CA passphrase (trailing newline is trimmed)"),
+    ("mitm-cert-ttl", Some("DURATION"), "In-memory TTL for generated MITM leaf certs, e.g. 30m, 1h, 3600s [default: 1h]"),
+    ("mitm-cert-cache-max-entries", Some("N"), "Maximum cached MITM leaf certificates; expired then oldest entries are evicted, 0 = unlimited [default: 10240]"),
+    ("socks-block-web", None, "Reject HTTP/HTTPS traffic over SOCKS4/4a/5 (works with or without MITM)"),
+    ("log-level", Some("LEVEL"), "Log level: QUIET, FATAL, ERROR, INFO, DEBUG, VERBOSE (case-insensitive) [default: INFO]"),
+    ("log-format", Some("FMT"), "Access/SOCKS log format: text (logfmt) or json (NDJSON) [default: text]"),
+    ("http-access-log", Some("PATH"), "Optional file path for HTTP/HTTPS access logs"),
+    ("socks-log", Some("PATH"), "Optional file path for SOCKS4/4a/5 connection logs"),
+];
+
+#[test]
+fn shared_flags_match_family_contract() {
+    let cmd = CliArgs::command();
+    for (long, value_name, help) in SHARED_FLAGS {
+        let arg = cmd
+            .get_arguments()
+            .find(|a| a.get_long() == Some(*long))
+            .unwrap_or_else(|| panic!("missing --{long}"));
+        assert!(!arg.is_hide_set(), "--{long} must be visible");
+        if let Some(expected) = value_name {
+            let names: Vec<String> = arg
+                .get_value_names()
+                .unwrap_or_default()
+                .iter()
+                .map(|n| n.to_string())
+                .collect();
+            assert_eq!(names, vec![expected.to_string()], "--{long} value name");
+        }
+        let env = arg.get_env().map(|e| e.to_string_lossy().into_owned());
+        let expected_env = format!("{ENV_PREFIX}{}", long.to_uppercase().replace('-', "_"));
+        assert_eq!(env.as_deref(), Some(expected_env.as_str()), "--{long} env var");
+        let rendered = arg.get_help().map(|h| h.to_string());
+        assert_eq!(rendered.as_deref(), Some(*help), "--{long} help text");
+    }
+}
+
+#[test]
+fn shared_defaults_match_family_contract() {
+    assert_eq!(DEFAULT_MAX_CONNECTIONS, 4096);
+    assert_eq!(DEFAULT_MITM_CERT_CACHE_MAX_ENTRIES, 10_240);
+}
+
+#[test]
+fn binary_help_and_exit_codes() {
+    let bin = env!("CARGO_BIN_EXE_rusty-conduit-switch");
+    let run = |args: &[&str]| {
+        let out = Command::new(bin)
+            .args(args)
+            .env_remove("RUSTY_CONDUIT_SWITCH_CONFIG")
+            .output()
+            .unwrap();
+        (
+            out.status.code(),
+            String::from_utf8_lossy(&out.stdout).into_owned(),
+            String::from_utf8_lossy(&out.stderr).into_owned(),
+        )
+    };
+    let (code, out, _) = run(&["--help"]);
+    assert_eq!(code, Some(0));
+    assert!(out.contains("--tcp-keepalive <DURATION>"), "{out}");
+    assert!(!out.contains("--tcp-keepalive-idle"), "deprecated alias must stay hidden: {out}");
+    assert!(!out.contains("--mitm-cert-cache-max <"), "deprecated alias must stay hidden: {out}");
+    let (code, _, _) = run(&["--no-such-flag"]);
+    assert_eq!(code, Some(2), "usage errors exit 2");
+    let missing = std::env::temp_dir().join(format!("cli-contract-missing-{}.toml", std::process::id()));
+    let (code, _, err) = run(&["--config", missing.to_str().unwrap(), "--http-port", "0", "--socks-port", "0"]);
+    assert_eq!(code, Some(1), "config errors exit 1: {err}");
+}
+```
 
 ## Scope
-- In: src/http/mod.rs, src/http/forward.rs, src/http/tunnel.rs, src/socks/mod.rs, src/socks/v4.rs, src/socks/v5.rs, src/server.rs, src/lib.rs, tests/socks_proxy.rs, tests/mux_port.rs
-- Out: docs/MASTER-PLAN.md, src/mitm/*, src/http/mitm_tunnel.rs, src/socks/web_guard.rs, src/reload.rs, src/import/*
+- In: `tests/cli_contract.rs` (new)
+- Out: `src/`, every other file under `tests/`, `docs/`, `README.md`, `DOX.md`, `tests/DOX.md`
 
 ## Sub-tasks
-1. [done] Implement `src/http/mod.rs`, `src/http/forward.rs`, and `src/http/tunnel.rs` wired to `Router` and `ProfileRegistry`, including streaming plain HTTP forwarding (absolute-form + `Proxy-Authorization` for `http`/`https` upstreams, origin-form over `UpstreamDialer` for `direct`/`socks5`/`socks4a`), non-MITM `CONNECT` opaque tunneling, `403 Forbidden` on `RouteBlocked` / global filter denial, and structured access logging with `rule`/`profile`/`upstream` — done when: `cargo check --lib` exits 0.
-2. [done] Implement `src/socks/mod.rs`, `src/socks/v4.rs`, and `src/socks/v5.rs` wired to `Router` and `ProfileRegistry` (TCP `CONNECT`, IPv4/IPv6/Domain, no inbound auth in v1), mapping `RouteBlocked` to SOCKS5 `0x02` and SOCKS4 `0x5B`, and logging `rule`/`profile`/`upstream` — done when: `cargo check --lib` exits 0.
-3. [done] Wire `src/http` and `src/socks` into `src/server.rs` (separate HTTP/SOCKS listeners, single-port mux when `http_port == socks_port > 0`, disabled listener when port is `0`) — done when: `cargo build` exits 0.
-4. [done] Write end-to-end integration tests in `tests/socks_proxy.rs` and `tests/mux_port.rs` verifying HTTP forward (both absolute-form to mock HTTP upstream and tunnel to mock SOCKS5 upstream), HTTPS `CONNECT`, SOCKS4/4a/5 routed to mock HTTP/SOCKS5/direct/block upstreams, failover, zero local DNS lookup for unresolvable proxied hostnames (e.g. `nonexistent.invalid`), single-port mux, and port-0 disable — done when: `cargo test --test socks_proxy --test mux_port` exits 0.
-5. [done] Fix-up: `## Verify` `cargo fmt --check` reported formatting diffs in src/http/tunnel.rs, src/lib.rs, src/server.rs, src/socks/mod.rs, tests/mux_port.rs, tests/socks_proxy.rs; run `cargo fmt` on those in-scope files — done when: `cargo fmt --check` exits 0.
+1. [done] Create `tests/cli_contract.rs` with the exact content in `## Context` and run `cargo fmt` — done when: `cargo test --locked --test cli_contract` compiles.
+2. [done] Run `cargo test --locked --test cli_contract`; record each failing assertion in `## Log` — done when: all 3 tests pass. A failure here means an earlier phase missed a doc comment; that is an escalation, not a fix-up (see `## Escalate when`).
 
 ## Verify
 ```sh
 cargo fmt --check
-cargo clippy --all-targets -- -D warnings
-cargo test
+cargo clippy --all-targets --locked -- -D warnings
+cargo test --locked --test cli_contract
+cargo test --locked
 ```
 
 ## Escalate when
-- Absolute-form forwarding over `hyper` 1.x client requires a custom URI or host header workaround that conflicts with HTTP/1.1 connection pooling → stop, set Status: needs-human — reason: <exact hyper behavior>
-- `server.rs` needs a trait or state shape change that breaks `config.rs` or `router` public APIs → stop, set Status: needs-human — reason: <exact breaking signature>
+- Any row of `SHARED_FLAGS` fails → stop, set Status: needs-human — reason: paste the assertion message (fixing it requires `src/config.rs`, which is outside this phase's scope).
+- `DEFAULT_MITM_CERT_CACHE_MAX_ENTRIES` or `DEFAULT_MAX_CONNECTIONS` is not public in `rusty_conduit_switch::config` → stop, set Status: needs-human — reason: paste the compiler error.
+- The missing-config run exits with something other than 1 → stop, set Status: needs-human — reason: paste the exit code and stderr.
 
 ## Log
 - (append-only, one line per event)
-- sub-task 1: src/http/{mod,forward,tunnel}.rs routed via RoutingState (server.rs) — absolute-form to http/https proxies via HttpConnectDialer::connect_proxy, origin-form over UpstreamDialer otherwise, CONNECT via registry failover chain, 403 on RouteBlocked/filter, rule/profile/upstream on access records
-- sub-task 2: src/socks/{mod,v4,v5}.rs — route_and_dial via Router (inbound=socks, no scheme/url) + registry failover chain; RouteBlocked/filter → Failure::NotAllowed (SOCKS5 0x02, SOCKS4 0x5B); Session logs rule/profile/upstream; parser unit tests
-- sub-task 3: server.rs EngineHandlers (HttpProxy+SocksProxy over SharedRouting) plugged into existing ListenPlan (separate / mux when http_port==socks_port>0 / port 0 disables); lib.rs run builds RoutingState::from_config (FATAL on error) instead of StubHandlers
-- sub-task 4: tests/socks_proxy.rs (10 tests: absolute-form+Proxy-Authorization to mock HTTP upstream, origin-form over SOCKS5 and direct, CONNECT to http/socks5/socks4a/direct, SOCKS4/4a/5 to http/socks5/socks4a/direct/block, IPv6, failover, filter 403/0x02/0x5B, nonexistent.invalid reaches upstream unresolved) and tests/mux_port.rs (3 tests: single-port mux all protocols, config equal ports → mux, port 0 disables each listener, separate listeners)
-- verify: initial cargo fmt --check failed (formatting diffs in 6 in-scope files); added fix-up sub-task 5 and ran rustfmt on in-scope files only
-
-- verify passed: fmt/clippy/test all rc=0; phase closed
+- sub-task 1: created `tests/cli_contract.rs` verbatim from `## Context` and ran `cargo fmt`.
+- sub-task 2: ran `cargo test --locked --test cli_contract`; all 3 tests passed with 0 failures.
+- verify: all 4 commands in `## Verify` passed; closing phase-0004.
 
 ## Evidence
 - (append-only: command → observed result)
-- cargo check --lib → Finished dev profile, 0 errors/warnings
-- cargo check --lib → Finished, 0 errors; cargo test --lib socks → 15 passed
-- cargo build → Finished dev profile; only pre-existing Cargo.toml unused-dependency warnings (dashmap, notify, p12-keystore, rcgen)
-- cargo test --test socks_proxy --test mux_port → socks_proxy 10 passed, mux_port 3 passed, 0 failed
-- cargo fmt --check (initial Verify) → Diff in src/http/tunnel.rs, src/lib.rs, src/server.rs, src/socks/mod.rs, tests/mux_port.rs, tests/socks_proxy.rs; after rustfmt → cargo fmt --check rc=0
-- Verify: cargo fmt --check → rc=0; cargo clippy --all-targets -- -D warnings → rc=0, 0 errors (only pre-existing Cargo.toml unused-dependency manifest warnings: dashmap, notify, p12-keystore, rcgen); cargo test → rc=0 (lib 128, mux_port 3, routing_rules 17, socks_proxy 10, upstream_proxies 14 passed, 0 failed)
-- smoke: target/debug/rusty-conduit-switch --http-port P --socks-port P → "multiplexed HTTP/HTTPS + SOCKS4/4a/5 proxy listening"; GET http://x.invalid/ → 502 with access line rule=<default> profile=direct upstream=direct; SOCKS5 greeting → 05 00, CONNECT x.invalid → REP 0x01; SIGTERM → drained, shutting down
-- [planner Gate D] independently verified: `cargo fmt --check` exit 0, `cargo clippy --all-targets -- -D warnings` exit 0 (only pre-existing cargo-manifest `unused dependency` warnings), `cargo test` socks_proxy 10 + mux_port 3 pass. Close commit `4fd8b0f` scope-clean (src/http/{mod,forward,tunnel}.rs, src/socks/{mod,v4,v5}.rs, src/server.rs, src/lib.rs, tests/socks_proxy.rs, tests/mux_port.rs + the two ledger files). Phase-0004 approved.
+- `cargo fmt && cargo test --locked --test cli_contract` → compiled and passed 3/3 tests (`shared_defaults_match_family_contract`, `shared_flags_match_family_contract`, `binary_help_and_exit_codes`).
+- `cargo fmt --check && cargo clippy --all-targets --locked -- -D warnings && cargo test --locked --test cli_contract && cargo test --locked` → exited 0 (3 contract tests, 61 unit tests + 75 integration tests passed).

@@ -110,27 +110,27 @@ environment variables accept `true`/`false`, `yes`/`no`, `on`/`off`, and `1`/`0`
 
 | CLI flag | Environment variable | TOML key | Default | Hot-reload | Description |
 | :--- | :--- | :--- | :--- | :---: | :--- |
-| `--config <PATH>` | `RUSTY_CONDUIT_SWITCH_CONFIG` | — | *(none)* | — | TOML configuration file |
+| `--config <PATH>` | `RUSTY_CONDUIT_SWITCH_CONFIG` | — | *(none)* | — | Optional TOML configuration file path |
 | `--watch-config` | `RUSTY_CONDUIT_SWITCH_WATCH_CONFIG` | `watch_config` | `false` | No | Watch `--config` and hot-reload on change |
-| `--watch-debounce <DUR>` | `RUSTY_CONDUIT_SWITCH_WATCH_DEBOUNCE` | `watch_debounce` | `300ms` | No | Debounce window for file change events |
+| `--watch-debounce <DURATION>` | `RUSTY_CONDUIT_SWITCH_WATCH_DEBOUNCE` | `watch_debounce` | `300ms` | No | Debounce window for file change events |
 | `--bind <IP>` | `RUSTY_CONDUIT_SWITCH_BIND` | `bind` | `127.0.0.1` | No | IPv4 or IPv6 bind address |
 | `--http-port <PORT>` | `RUSTY_CONDUIT_SWITCH_HTTP_PORT` | `http_port` | `3128` | No | HTTP/HTTPS proxy port (`0` disables) |
 | `--socks-port <PORT>` | `RUSTY_CONDUIT_SWITCH_SOCKS_PORT` | `socks_port` | `1080` | No | SOCKS4/4a/5 port (`0` disables) |
-| `--connect-timeout <DUR>` | `RUSTY_CONDUIT_SWITCH_CONNECT_TIMEOUT` | `connect_timeout` | `10s` | Yes | Upstream TCP connect + proxy handshake timeout, per failover attempt |
-| `--max-connections <N>` | `RUSTY_CONDUIT_SWITCH_MAX_CONNECTIONS` | `max_connections` | `1024` | No | Concurrent client connections (`0` = unlimited) |
-| `--tcp-keepalive-idle <DUR>` | `RUSTY_CONDUIT_SWITCH_TCP_KEEPALIVE_IDLE` | `tcp_keepalive.idle` | `60s` | Yes | Keepalive idle time on client and upstream sockets (`0s` disables) |
-| `--tcp-keepalive-interval <DUR>` | `RUSTY_CONDUIT_SWITCH_TCP_KEEPALIVE_INTERVAL` | `tcp_keepalive.interval` | `10s` | Yes | Interval between keepalive probes |
-| `--tcp-keepalive-retries <N>` | `RUSTY_CONDUIT_SWITCH_TCP_KEEPALIVE_RETRIES` | `tcp_keepalive.retries` | `5` | Yes | Unanswered probes before the socket is dropped |
-| `--allow <LIST>` | `RUSTY_CONDUIT_SWITCH_ALLOW` | `filter.allow` | *(none)* | Yes | Global destination allowlist |
-| `--block <LIST>` | `RUSTY_CONDUIT_SWITCH_BLOCK` | `filter.block` | *(none)* | Yes | Global destination blocklist (not with `--allow`) |
-| `--mitm-ca-cert <PATH>` | `RUSTY_CONDUIT_SWITCH_MITM_CA_CERT` | `mitm.ca_cert` | *(none)* | No | PEM CA certificate (MITM with `--mitm-ca-key`) |
-| `--mitm-ca-key <PATH>` | `RUSTY_CONDUIT_SWITCH_MITM_CA_KEY` | `mitm.ca_key` | *(none)* | No | PEM CA private key |
-| `--mitm-ca-p12 <PATH>` | `RUSTY_CONDUIT_SWITCH_MITM_CA_P12` | `mitm.ca_p12` | *(none)* | No | PKCS#12 CA bundle (enables MITM) |
+| `--connect-timeout <DURATION>` | `RUSTY_CONDUIT_SWITCH_CONNECT_TIMEOUT` | `connect_timeout` | `10s` | Yes | Upstream TCP connect + proxy handshake timeout, per failover attempt |
+| `--max-connections <N>` | `RUSTY_CONDUIT_SWITCH_MAX_CONNECTIONS` | `max_connections` | `4096` | No | Concurrent client connections; excess connections are closed immediately (`0` = unlimited) |
+| `--tcp-keepalive <DURATION>` | `RUSTY_CONDUIT_SWITCH_TCP_KEEPALIVE` | `tcp_keepalive` | `60s` | Yes | Idle time before TCP keepalive probes start on client and upstream sockets (`0` disables) |
+| `--tcp-keepalive-interval <DURATION>` | `RUSTY_CONDUIT_SWITCH_TCP_KEEPALIVE_INTERVAL` | `tcp_keepalive_interval` | `10s` | Yes | Time between unanswered TCP keepalive probes |
+| `--tcp-keepalive-retries <N>` | `RUSTY_CONDUIT_SWITCH_TCP_KEEPALIVE_RETRIES` | `tcp_keepalive_retries` | `5` | Yes | Unanswered TCP keepalive probes before the connection is closed |
+| `--allow <RULE>` | `RUSTY_CONDUIT_SWITCH_ALLOW` | `allow` | *(none)* | Yes | Destination allowlist; when combined with `--block`, serves as exceptions to the blocklist |
+| `--block <RULE>` | `RUSTY_CONDUIT_SWITCH_BLOCK` | `block` | *(none)* | Yes | Destination blocklist; combine with `--allow` to carve out exceptions |
+| `--mitm-ca-cert <PATH>` | `RUSTY_CONDUIT_SWITCH_MITM_CA_CERT` | `mitm.ca_cert` | *(none)* | No | Path to PEM-encoded CA certificate (enables MITM with `--mitm-ca-key`) |
+| `--mitm-ca-key <PATH>` | `RUSTY_CONDUIT_SWITCH_MITM_CA_KEY` | `mitm.ca_key` | *(none)* | No | Path to PEM-encoded CA private key |
+| `--mitm-ca-p12 <PATH>` | `RUSTY_CONDUIT_SWITCH_MITM_CA_P12` | `mitm.ca_p12` | *(none)* | No | Path to PKCS#12 (`.p12`/`.pfx`) CA bundle (enables MITM) |
 | `--mitm-ca-passphrase <STR>` | `RUSTY_CONDUIT_SWITCH_MITM_CA_PASSPHRASE` | `mitm.ca_passphrase` | *(none)* | No | CA passphrase (prefer the env var or a file) |
 | `--mitm-ca-passphrase-file <PATH>` | `RUSTY_CONDUIT_SWITCH_MITM_CA_PASSPHRASE_FILE` | `mitm.ca_passphrase_file` | *(none)* | No | File holding the CA passphrase (trailing newline trimmed) |
-| `--mitm-cert-ttl <DUR>` | `RUSTY_CONDUIT_SWITCH_MITM_CERT_TTL` | `mitm.cert_ttl` | `1h` | No | In-memory lifetime of signed leaf certificates (minimum `10s`) |
-| `--mitm-cert-cache-max <N>` | `RUSTY_CONDUIT_SWITCH_MITM_CERT_CACHE_MAX` | `mitm.cert_cache_max` | `4096` | No | Maximum cached leaf certificates (`0` = unlimited) |
-| `--socks-block-web-in-mitm` | `RUSTY_CONDUIT_SWITCH_SOCKS_BLOCK_WEB_IN_MITM` | `mitm.socks_block_web` | `false` | No | Reject HTTP/HTTPS traffic over SOCKS while MITM is on |
+| `--mitm-cert-ttl <DURATION>` | `RUSTY_CONDUIT_SWITCH_MITM_CERT_TTL` | `mitm.cert_ttl` | `1h` | No | In-memory TTL for generated MITM leaf certificates (minimum `10s`) |
+| `--mitm-cert-cache-max-entries <N>` | `RUSTY_CONDUIT_SWITCH_MITM_CERT_CACHE_MAX_ENTRIES` | `mitm.cert_cache_max_entries` | `10240` | No | Maximum cached MITM leaf certificates (`0` = unlimited) |
+| `--socks-block-web` | `RUSTY_CONDUIT_SWITCH_SOCKS_BLOCK_WEB` | `socks_block_web` | `false` | No | Reject HTTP/HTTPS traffic over SOCKS4/4a/5 (works with or without MITM) |
 | `--log-level <LEVEL>` | `RUSTY_CONDUIT_SWITCH_LOG_LEVEL` | `logging.level` | `INFO` | No | `QUIET`, `FATAL`, `ERROR`, `INFO`, `DEBUG`, `VERBOSE` |
 | `--log-format <FMT>` | `RUSTY_CONDUIT_SWITCH_LOG_FORMAT` | `logging.format` | `text` | No | Access/SOCKS log format: `text` (logfmt) or `json` (NDJSON) |
 | `--http-access-log <PATH>` | `RUSTY_CONDUIT_SWITCH_HTTP_ACCESS_LOG` | `logging.http_access_log` | *(none)* | No | Write HTTP/HTTPS access records to a file |
@@ -140,11 +140,39 @@ environment variables accept `true`/`false`, `yes`/`no`, `on`/`off`, and `1`/`0`
 FQDN, or a `*.domain` wildcard. Repeat the flag or separate entries with commas
 (`--block "*.ads.example,10.0.0.0/8"`). The filter runs before any routing rule; a denied
 target gets `403 Forbidden` (HTTP) or a SOCKS rejection, and the log shows
-`status=denied_by_filter`. Allowlist and blocklist are mutually exclusive.
+`status=denied_by_filter`. When both `--allow` and `--block` are set, `--block` denies matching
+destinations while `--allow` carves out exceptions to the blocklist.
 
 **Passphrases.** `--mitm-ca-passphrase` on the command line can show up in process listings
 and shell history, and the server prints a `NOTICE` when you use it. Prefer
 `RUSTY_CONDUIT_SWITCH_MITM_CA_PASSPHRASE` or `--mitm-ca-passphrase-file`.
+
+### Deprecated names
+
+The older names below are still accepted for backwards compatibility and log a `NOTICE` at
+startup. When both an old name and its replacement are set, the replacement wins.
+
+| Old name | Replacement |
+| :--- | :--- |
+| `--tcp-keepalive-idle` (deprecated) | `--tcp-keepalive` |
+| `RUSTY_CONDUIT_SWITCH_TCP_KEEPALIVE_IDLE` (deprecated) | `RUSTY_CONDUIT_SWITCH_TCP_KEEPALIVE` |
+| `--mitm-cert-cache-max` (deprecated) | `--mitm-cert-cache-max-entries` |
+| `RUSTY_CONDUIT_SWITCH_MITM_CERT_CACHE_MAX` (deprecated) | `RUSTY_CONDUIT_SWITCH_MITM_CERT_CACHE_MAX_ENTRIES` |
+| `[tcp_keepalive]` (deprecated) | `tcp_keepalive`, `tcp_keepalive_interval`, `tcp_keepalive_retries` |
+| `[filter]` (deprecated) | `allow`, `block` |
+| `mitm.cert_cache_max` (deprecated) | `mitm.cert_cache_max_entries` |
+
+### Open-file limit
+
+Every concurrent proxied connection uses 2 file descriptors (client + upstream), so
+`--max-connections N` needs at least `2 × max_connections + 64` descriptors (`8256` at the
+default `4096`). On Unix, `rusty-conduit-switch` automatically raises its soft open-file limit
+(`RLIMIT_NOFILE`) toward the hard limit at startup whenever the current soft limit is below
+that threshold. If the limit still cannot hold `--max-connections`, it logs:
+
+```text
+NOTICE: open-file limit is <limit> but --max-connections <N> needs at least <needed>; only about <M> concurrent connections will fit. Raise `ulimit -n` (LimitNOFILE= under systemd) or lower --max-connections
+```
 
 ---
 
@@ -160,16 +188,15 @@ socks_port = 1080
 watch_config = true
 watch_debounce = "300ms"
 connect_timeout = "10s"
-max_connections = 1024
+max_connections = 4096
+socks_block_web = false
 
-[tcp_keepalive]
-idle = "60s"
-interval = "10s"
-retries = 5
+tcp_keepalive = "60s"
+tcp_keepalive_interval = "10s"
+tcp_keepalive_retries = 5
 
-[filter]
-# allow = ["*.example.com", "10.0.0.0/8"]   # either allow ...
-block = ["*.ads.example"]                  # ... or block, not both
+# allow = ["*.example.com", "10.0.0.0/8"]   # allowlist, or exceptions when combined with block
+block = ["*.ads.example"]
 
 [mitm]                                     # MITM is on only when a CA is configured
 # ca_cert = "/etc/rusty-conduit-switch/ca.pem"
@@ -177,8 +204,7 @@ block = ["*.ads.example"]                  # ... or block, not both
 # ca_p12 = "/etc/rusty-conduit-switch/ca.p12"
 # ca_passphrase_file = "/etc/rusty-conduit-switch/ca.pass"
 cert_ttl = "1h"
-cert_cache_max = 4096
-socks_block_web = false
+cert_cache_max_entries = 10240
 
 [logging]
 level = "INFO"
@@ -282,7 +308,7 @@ resolution as `profile=split->web_proxy`.
 
 ### How a connection is routed
 
-1. **Global filter.** If `[filter]` (or `--allow` / `--block`) is set, it is checked first.
+1. **Global filter.** If top-level `allow` / `block` (or `--allow` / `--block`) is set, it is checked first.
 2. **Table selection.** HTTP/HTTPS connections use `[routing.http]` if present, SOCKS
    connections use `[routing.socks]` if present, and everything else uses the unified
    `[routing]` table.
@@ -403,7 +429,8 @@ started with, and fully validates the result (including self-loops) before anyth
   stays active. A bad save never stops the server.
 
 **Reloaded live:** `[profiles.*]`, `[routing]` (rules, defaults, split tables,
-`resolve_dns`), `[filter]`, `connect_timeout`, and `[tcp_keepalive]`.
+`resolve_dns`), `allow`, `block`, `connect_timeout`, `tcp_keepalive`,
+`tcp_keepalive_interval`, and `tcp_keepalive_retries`.
 
 **Need a restart:** `bind`, `http_port`, `socks_port`, `max_connections`, `watch_config`,
 `watch_debounce`, `mitm.*`, and `logging.*`. If one of these changes, the reload still applies
@@ -489,8 +516,8 @@ rusty-conduit-switch --config config.toml --mitm-ca-cert ca.pem --mitm-ca-key ca
   `https` proxies. Origin certificates are verified against the OS trust store.
 - Leaf certificates are ECDSA P-256, valid from 5 minutes before signing until
   `--mitm-cert-ttl` + 5 minutes. They are cached in memory only, up to
-  `--mitm-cert-cache-max` entries.
-- SOCKS stays a transparent TCP tunnel. With `--socks-block-web-in-mitm`, SOCKS connections
+  `--mitm-cert-cache-max-entries` entries.
+- SOCKS stays a transparent TCP tunnel. With `--socks-block-web`, SOCKS connections
   that carry HTTP or TLS web traffic are rejected so that browsers cannot bypass inspection by
   switching to SOCKS.
 - The access log marks decrypted requests with `mitm=true`.

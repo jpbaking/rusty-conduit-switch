@@ -41,7 +41,7 @@
 | **Plain HTTP → HTTP Upstream** | When a plain HTTP request (`http://...`) routes to an `http` or `https` upstream proxy, forward in **absolute-form** (`GET http://host/path HTTP/1.1` + `Proxy-Authorization`) rather than forcing `CONNECT` to port 80, ensuring compatibility with corporate HTTP proxies. All other combinations (`CONNECT`, SOCKS, or plain HTTP → SOCKS/direct) use the unified `UpstreamDialer` tunnel. |
 | **Failover Chains** | Any rule or default target may be a single profile name (`"corp"`) or an ordered failover list (`["corp", "backup", "direct"]`). Failover triggers only on TCP connect / proxy handshake failure — never mid-stream after bytes have flowed. |
 | **Loop Prevention** | At startup and on every hot-reload, validate that no upstream profile points to the server's own listening `(bind, port)` (including `127.0.0.1`/`::1` when bound to `0.0.0.0`/`::`). Fail fast on startup; reject reload on hot-reload. |
-| **MITM Scope** | HTTP/HTTPS `CONNECT` tunnels only (works with **any** upstream profile, including tunneling upstream TLS through `socks5`, `socks4a`, `http`, or `https` proxies). SOCKS remains a transparent L4 tunnel with optional `--socks-block-web-in-mitm`. |
+| **MITM Scope** | HTTP/HTTPS `CONNECT` tunnels only (works with **any** upstream profile, including tunneling upstream TLS through `socks5`, `socks4a`, `http`, or `https` proxies). SOCKS remains a transparent L4 tunnel with optional `--socks-block-web`. |
 | **Hot-Reload** | Atomic `ArcSwap` of the compiled routing table, upstream profiles, and global allow/block filter. Triggered by `SIGHUP` (Unix) and/or `--watch-config` (cross-platform debounced file watcher). Listener bind/ports, MITM CA, and log file paths require a restart. |
 | **AirSwitch Import** | Built-in `import-airswitch` subcommand converts AirSwitch / ZeroOmega / SwitchyOmega `.bak` JSON files directly into a valid, commented `rusty-conduit-switch` TOML config, printing clear warnings for browser-only constructs (`PacProfile`, `SystemProfile`, URL rules on opaque tunnels). |
 | **Inbound Auth & SOCKS Scope** | TCP only: SOCKS4, SOCKS4a, SOCKS5 `CONNECT` (IPv4, IPv6, Domain). No inbound proxy auth in v1 (prominent startup notice when binding to a non-loopback address). Outbound upstream proxy auth **is** supported in v1. |
@@ -74,31 +74,31 @@ rusty-conduit-switch import-airswitch <BAK_PATH> \   # Convert AirSwitch .bak JS
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | `--config <PATH>` | `RUSTY_CONDUIT_SWITCH_CONFIG` | — | *(none)* | *(source)* | Path to TOML configuration file |
 | `--watch-config` | `RUSTY_CONDUIT_SWITCH_WATCH_CONFIG` | `watch_config` | `false` | No | Watch `--config` for changes and hot-reload automatically |
-| `--watch-debounce <DUR>` | `RUSTY_CONDUIT_SWITCH_WATCH_DEBOUNCE` | `watch_debounce` | `300ms` | No | Debounce window for config file change events |
+| `--watch-debounce <DURATION>` | `RUSTY_CONDUIT_SWITCH_WATCH_DEBOUNCE` | `watch_debounce` | `300ms` | No | Debounce window for config file change events |
 | `--bind <IP>` | `RUSTY_CONDUIT_SWITCH_BIND` | `bind` | `127.0.0.1` | No | IPv4 or IPv6 bind address |
 | `--http-port <PORT>` | `RUSTY_CONDUIT_SWITCH_HTTP_PORT` | `http_port` | `3128` | No | HTTP/HTTPS proxy port (`0` to disable) |
 | `--socks-port <PORT>` | `RUSTY_CONDUIT_SWITCH_SOCKS_PORT` | `socks_port` | `1080` | No | SOCKS4/4a/5 proxy port (`0` to disable) |
-| `--connect-timeout <DUR>` | `RUSTY_CONDUIT_SWITCH_CONNECT_TIMEOUT` | `connect_timeout` | `10s` | Yes | Upstream TCP + proxy handshake timeout per attempt |
-| `--max-connections <N>` | `RUSTY_CONDUIT_SWITCH_MAX_CONNECTIONS` | `max_connections` | `1024` | No | Maximum concurrent client connections |
-| `--tcp-keepalive-idle <DUR>` | `RUSTY_CONDUIT_SWITCH_TCP_KEEPALIVE_IDLE` | `tcp_keepalive.idle` | `60s` | Yes | TCP keepalive idle time (`0s` disables) |
-| `--tcp-keepalive-interval <DUR>` | `RUSTY_CONDUIT_SWITCH_TCP_KEEPALIVE_INTERVAL` | `tcp_keepalive.interval` | `10s` | Yes | Interval between TCP keepalive probes |
-| `--tcp-keepalive-retries <N>` | `RUSTY_CONDUIT_SWITCH_TCP_KEEPALIVE_RETRIES` | `tcp_keepalive.retries` | `5` | Yes | Unanswered probes before dropping socket |
-| `--allow <LIST>` | `RUSTY_CONDUIT_SWITCH_ALLOW` | `filter.allow` | *(none)* | Yes | Global destination allowlist (IP/CIDR/FQDN/`*.domain`) |
-| `--block <LIST>` | `RUSTY_CONDUIT_SWITCH_BLOCK` | `filter.block` | *(none)* | Yes | Global destination blocklist (mutually exclusive with `--allow`) |
+| `--connect-timeout <DURATION>` | `RUSTY_CONDUIT_SWITCH_CONNECT_TIMEOUT` | `connect_timeout` | `10s` | Yes | Upstream TCP + proxy handshake timeout per attempt |
+| `--max-connections <N>` | `RUSTY_CONDUIT_SWITCH_MAX_CONNECTIONS` | `max_connections` | `4096` | No | Maximum concurrent client connections |
+| `--tcp-keepalive <DURATION>` | `RUSTY_CONDUIT_SWITCH_TCP_KEEPALIVE` | `tcp_keepalive` | `60s` | Yes | TCP keepalive idle time (`0` disables) |
+| `--tcp-keepalive-interval <DURATION>` | `RUSTY_CONDUIT_SWITCH_TCP_KEEPALIVE_INTERVAL` | `tcp_keepalive_interval` | `10s` | Yes | Time between unanswered TCP keepalive probes |
+| `--tcp-keepalive-retries <N>` | `RUSTY_CONDUIT_SWITCH_TCP_KEEPALIVE_RETRIES` | `tcp_keepalive_retries` | `5` | Yes | Unanswered probes before dropping socket |
+| `--allow <RULE>` | `RUSTY_CONDUIT_SWITCH_ALLOW` | `allow` | *(none)* | Yes | Global destination allowlist (IP/CIDR/FQDN/`*.domain`); exceptions when combined with `--block` |
+| `--block <RULE>` | `RUSTY_CONDUIT_SWITCH_BLOCK` | `block` | *(none)* | Yes | Global destination blocklist (combine with `--allow` for exceptions) |
 | `--mitm-ca-cert <PATH>` | `RUSTY_CONDUIT_SWITCH_MITM_CA_CERT` | `mitm.ca_cert` | *(none)* | No | PEM CA cert (enables MITM with `--mitm-ca-key`) |
 | `--mitm-ca-key <PATH>` | `RUSTY_CONDUIT_SWITCH_MITM_CA_KEY` | `mitm.ca_key` | *(none)* | No | PEM CA private key |
 | `--mitm-ca-p12 <PATH>` | `RUSTY_CONDUIT_SWITCH_MITM_CA_P12` | `mitm.ca_p12` | *(none)* | No | PKCS#12 CA bundle (enables MITM) |
 | `--mitm-ca-passphrase <STR>` | `RUSTY_CONDUIT_SWITCH_MITM_CA_PASSPHRASE` | `mitm.ca_passphrase` | *(none)* | No | CA passphrase (prefer env var or file) |
 | `--mitm-ca-passphrase-file <PATH>` | `RUSTY_CONDUIT_SWITCH_MITM_CA_PASSPHRASE_FILE` | `mitm.ca_passphrase_file` | *(none)* | No | File containing CA passphrase |
-| `--mitm-cert-ttl <DUR>` | `RUSTY_CONDUIT_SWITCH_MITM_CERT_TTL` | `mitm.cert_ttl` | `1h` | No | In-memory TTL for signed MITM leaf certs |
-| `--mitm-cert-cache-max <N>` | `RUSTY_CONDUIT_SWITCH_MITM_CERT_CACHE_MAX` | `mitm.cert_cache_max` | `4096` | No | Max entries in MITM leaf cert cache |
-| `--socks-block-web-in-mitm` | `RUSTY_CONDUIT_SWITCH_SOCKS_BLOCK_WEB_IN_MITM` | `mitm.socks_block_web` | `false` | No | Reject HTTP/HTTPS over SOCKS when MITM is ON |
+| `--mitm-cert-ttl <DURATION>` | `RUSTY_CONDUIT_SWITCH_MITM_CERT_TTL` | `mitm.cert_ttl` | `1h` | No | In-memory TTL for signed MITM leaf certs |
+| `--mitm-cert-cache-max-entries <N>` | `RUSTY_CONDUIT_SWITCH_MITM_CERT_CACHE_MAX_ENTRIES` | `mitm.cert_cache_max_entries` | `10240` | No | Max entries in MITM leaf cert cache |
+| `--socks-block-web` | `RUSTY_CONDUIT_SWITCH_SOCKS_BLOCK_WEB` | `socks_block_web` | `false` | No | Reject HTTP/HTTPS over SOCKS4/4a/5 (with or without MITM) |
 | `--log-level <LEVEL>` | `RUSTY_CONDUIT_SWITCH_LOG_LEVEL` | `logging.level` | `INFO` | No | `QUIET`, `FATAL`, `ERROR`, `INFO`, `DEBUG`, `VERBOSE` |
 | `--log-format <FMT>` | `RUSTY_CONDUIT_SWITCH_LOG_FORMAT` | `logging.format` | `text` | No | `text` (logfmt) or `json` (NDJSON) |
 | `--http-access-log <PATH>` | `RUSTY_CONDUIT_SWITCH_HTTP_ACCESS_LOG` | `logging.http_access_log` | *(none)* | No | Optional file path for HTTP/HTTPS access logs |
 | `--socks-log <PATH>` | `RUSTY_CONDUIT_SWITCH_SOCKS_LOG` | `logging.socks_log` | *(none)* | No | Optional file path for SOCKS4/4a/5 logs |
 
-> **Hot-Reloadable Config Sections:** `[profiles.*]`, `[routing]` (including `rules`, `default`, `[routing.http]`, `[routing.socks]`, `resolve_dns`), `[filter]`, `connect_timeout`, and `[tcp_keepalive]` all hot-reload live. If a reload detects changes to non-reloadable fields (`bind`, `http_port`, `socks_port`, `mitm.*`, `logging.*`, `max_connections`), it logs a clear `INFO` warning stating which fields were ignored until restart, while still applying the reloadable routing/profile changes.
+> **Hot-Reloadable Config Sections:** `[profiles.*]`, `[routing]` (including `rules`, `default`, `[routing.http]`, `[routing.socks]`, `resolve_dns`), `allow`, `block`, `connect_timeout`, `tcp_keepalive`, `tcp_keepalive_interval`, and `tcp_keepalive_retries` all hot-reload live. If a reload detects changes to non-reloadable fields (`bind`, `http_port`, `socks_port`, `mitm.*`, `logging.*`, `max_connections`), it logs a clear `INFO` warning stating which fields were ignored until restart, while still applying the reloadable routing/profile changes.
 
 ### Annotated Example `config.toml`
 
@@ -185,7 +185,7 @@ target = "corp"                    # Only matches when full URL is visible (HTTP
 ## 4. Routing Engine (`src/router/`)
 
 ### Evaluation Model
-1. **Global Egress Filter (`[filter]`):** If `filter.allow` or `filter.block` is configured, evaluate it first. Denied targets are immediately rejected with `status=denied_by_filter`.
+1. **Global Egress Filter (`allow` / `block`):** If `allow` or `block` is configured, evaluate it first. Denied targets are immediately rejected with `status=denied_by_filter`.
 2. **Active Rule Table Selection:**
    - If the inbound protocol is HTTP/HTTPS and `[routing.http]` is present, evaluate `[routing.http].rules` with fallback `[routing.http].default` (or fall back to unified `[routing]` if `inherit = true`).
    - If the inbound protocol is SOCKS and `[routing.socks]` is present, evaluate `[routing.socks].rules` with fallback `[routing.socks].default`.

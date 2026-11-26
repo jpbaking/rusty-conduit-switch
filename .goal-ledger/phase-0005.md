@@ -1,61 +1,55 @@
-# phase-0005 — Opt-in MITM over routed upstreams and SOCKS web guard
+# phase-0005 — Update user docs and DOX Feature Map
 
 - Status: done
 - Owner: executor
-- Depends on: phase-0004
-- Goal: Port the pure-Rust opt-in MITM engine (`src/mitm/`), implement `src/http/mitm_tunnel.rs` running upstream TLS over any `UpstreamStream` with per-request URL routing when URL rules exist, and implement `src/socks/web_guard.rs` (`--socks-block-web-in-mitm`).
-- Done when: `cargo fmt --check && cargo clippy --all-targets -- -D warnings && cargo test` exits 0 with `tests/mitm_proxy.rs` passing for MITM over direct, SOCKS5, and HTTP upstreams, per-request URL routing under MITM, leaf cert caching/reaping, and `--socks-block-web-in-mitm`.
-- Pattern to follow: ../rusty-conduit/src/mitm/mod.rs:1, ../rusty-conduit/src/mitm/ca.rs:1, ../rusty-conduit/src/mitm/signer.rs:1, ../rusty-conduit/src/mitm/cache.rs:1, ../rusty-conduit/src/http/mitm_tunnel.rs:1, ../rusty-conduit/src/socks/web_guard.rs:1, ../rusty-conduit/tests/mitm_proxy.rs:1
+- Depends on: phase-0001, phase-0002, phase-0003, phase-0004
+- Goal: Make every user-facing doc describe the new flag, env, and TOML names and defaults, list the deprecated names in one place, and document the open-file limit behaviour.
+- Done when: every command in `## Verify` exits 0.
+- Pattern to follow: the flag reference table in `docs/USER-GUIDE.md` (around line 120) for row format; `../rusty-conduit/docs/PERFORMANCE-AND-SIZING.md` section 3 for the open-file limit wording (read only; do not edit that repo)
 
 ## Context
-Read `docs/MASTER-PLAN.md` Section 1 (Principles 1, 3, 4), Section 4 (MITM + Per-Request URL Routing), and Section 8 (`src/mitm/`, `src/http/mitm_tunnel.rs`, `src/socks/web_guard.rs`).
-MITM is OFF by default and NEVER auto-generates a root CA. Users supply PEM (`ca_cert` + `ca_key`) or PKCS#12 (`ca_p12`) with optional passphrase/passphrase-file.
-In `src/http/mitm_tunnel.rs`:
-- Upstream TLS (`tokio-rustls` client) runs over ANY `UpstreamStream` returned by `Router` + `UpstreamDialer` (direct, SOCKS5, SOCKS4a, HTTP CONNECT, HTTPS CONNECT).
-- If the active router has no URL-level rules (`url_wildcard`, `url_regex`, `keyword`), resolve the route once at `CONNECT` time and reuse the upstream TLS connection across requests on that tunnel.
-- If URL-level rules ARE configured, evaluate the router per decrypted HTTPS request with full `https://host/path?query`, dialing a different upstream profile if consecutive requests route differently.
+Phases 0001–0004 changed: `--tcp-keepalive-idle` → `--tcp-keepalive` (env `RUSTY_CONDUIT_SWITCH_TCP_KEEPALIVE`); `--mitm-cert-cache-max` → `--mitm-cert-cache-max-entries` (env `..._MITM_CERT_CACHE_MAX_ENTRIES`); TOML `[tcp_keepalive]` table → top-level `tcp_keepalive`, `tcp_keepalive_interval`, `tcp_keepalive_retries`; `[filter]` table → top-level `allow`, `block`; `mitm.cert_cache_max` → `mitm.cert_cache_max_entries`; defaults `max_connections` 1024 → 4096 and MITM cache 4096 → 10240; `--allow` + `--block` together act as block-with-exceptions; startup raises the soft open-file limit and logs `NOTICE: open-file limit is …` if it still cannot hold `--max-connections` (needs `2 × max_connections + 64`). Old names still work and log a deprecation NOTICE.
+Rule for old names: they may appear only in rows or lines that also contain the word `deprecated`, so the Verify greps can find stray ones. The hot-reload docs must use the new key names.
+In `DOX.md`, edit only the `## Project Rules` and `## Feature Map` sections; the rest of that file is framework text.
 
 ## Scope
-- In: src/mitm/mod.rs, src/mitm/ca.rs, src/mitm/signer.rs, src/mitm/cache.rs, src/http/mitm_tunnel.rs, src/http/mod.rs, src/socks/mod.rs, src/socks/web_guard.rs, src/socks/v4.rs, src/socks/v5.rs, src/server.rs, src/lib.rs, tests/mitm_proxy.rs
-- Out: docs/MASTER-PLAN.md, src/reload.rs, src/import/*
+- In: `docs/USER-GUIDE.md`, `docs/MITM-CA-GUIDE.md`, `docs/MASTER-PLAN.md`, `README.md`, `DOX.md`
+- Out: `src/`, `tests/`, `tests/DOX.md`, `src/import/DOX.md`, `Dockerfile`, every file outside this repository
 
 ## Sub-tasks
-1. [done] Port `src/mitm/ca.rs`, `src/mitm/signer.rs`, `src/mitm/cache.rs`, and `src/mitm/mod.rs` from `../rusty-conduit/src/mitm/` (PEM & PKCS#12 CA loading, startup validation, `rcgen` leaf cert signing with `-5m`/`+TTL+5m`, bounded `DashMap` TTL + max-entry `CertCache` with single-flight dedup and background reaper) — done when: `cargo test --lib mitm` exits 0.
-2. [done] Implement `src/http/mitm_tunnel.rs` and wire it in `src/http/mod.rs` so MITM HTTPS `CONNECT` terminates client TLS, performs upstream TLS over any `UpstreamStream` from `Router` + `ProfileRegistry`, reuses the upstream TLS connection when no URL rules exist, and evaluates per-request URL rules when URL rules are configured — done when: `cargo check --lib` exits 0.
-3. [done] Port `src/socks/web_guard.rs` from `../rusty-conduit/src/socks/web_guard.rs` and wire `--socks-block-web-in-mitm` in `src/socks/mod.rs`, `src/socks/v4.rs`, `src/socks/v5.rs`, and `src/server.rs` — done when: `cargo test --lib socks` exits 0.
-4. [done] Write end-to-end tests in `tests/mitm_proxy.rs` covering MITM over direct, mock SOCKS5, and mock HTTP CONNECT upstreams, per-request URL-rule routing switching upstreams within one MITM connection, leaf cert cache TTL/cap, and `--socks-block-web-in-mitm` blocking HTTP/TLS-ALPN over SOCKS while allowing non-web TCP — done when: `cargo test --test mitm_proxy` exits 0.
+1. [done] `docs/USER-GUIDE.md`: update the flag/env/TOML reference rows for the renamed flags and the two defaults; rewrite the TOML example (around lines 160–185) to the flat keys; change any `--block` text that says it is mutually exclusive with `--allow` to describe block-with-exceptions; add a `### Deprecated names` subsection after the reference table with one row per old name, formatted `| \`<old>\` (deprecated) | \`<new>\` |`, covering both flags, both env vars, the two TOML tables, and `mitm.cert_cache_max`; add a short `### Open-file limit` subsection stating the `2 × max_connections + 64` rule, that the switch raises its soft limit at startup, and the NOTICE text it logs otherwise — done when: `grep -n 'Deprecated names' docs/USER-GUIDE.md` and `grep -n 'Open-file limit' docs/USER-GUIDE.md` both print a line.
+2. [done] `docs/MITM-CA-GUIDE.md`: change `cert_cache_max = 4096` (around line 157) to `cert_cache_max_entries = 10240` and update any flag or default mentioned nearby — done when: `grep -n 'cert_cache_max\b' docs/MITM-CA-GUIDE.md | grep -vi deprecated` prints nothing.
+3. [done] `docs/MASTER-PLAN.md`: update the option table rows (around lines 82 and 94) and the hot-reload sentence (around line 101) to the new names and defaults — done when: `grep -nE '\[filter\]|\[tcp_keepalive\]' docs/MASTER-PLAN.md | grep -vi deprecated` prints nothing.
+4. [done] `README.md`: if its quick-start config uses `[filter]`, `[tcp_keepalive]`, or `cert_cache_max`, switch it to the new keys — done when: the README grep in `## Verify` passes.
+5. [done] `DOX.md` `## Feature Map`: add `- **Open-file limit** — raises the soft \`RLIMIT_NOFILE\` at startup and logs a NOTICE when it cannot hold \`--max-connections\`. Start: \`src/fdlimit.rs\`. Files: \`src/lib.rs\` (\`run\`), \`Cargo.toml\` (\`rlimit\`).` and `- **CLI family contract** — test that shared flags keep the family's names, value names, env vars, help text, and defaults. Start: \`tests/cli_contract.rs\`.`; extend the existing **Configuration loading & validation** bullet with `; deprecated aliases (\`--tcp-keepalive-idle\`, \`--mitm-cert-cache-max\`, \`[tcp_keepalive]\`, \`[filter]\`, \`mitm.cert_cache_max\`) log a NOTICE` — done when: `grep -c 'fdlimit.rs\|cli_contract.rs' DOX.md` prints at least `2`.
 
 ## Verify
 ```sh
-cargo fmt --check
-cargo clippy --all-targets -- -D warnings
-cargo test
+! grep -rnE 'tcp-keepalive-idle|TCP_KEEPALIVE_IDLE|mitm-cert-cache-max([^-]|$)|MITM_CERT_CACHE_MAX([^_]|$)|cert_cache_max([^_]|$)|\[filter\]|\[tcp_keepalive\]' docs README.md | grep -vi deprecated
+! grep -rnE 'max_connections = 1024|cert_cache_max_entries = 4096|mutually exclusive with --allow' docs README.md
+grep -n 'Deprecated names' docs/USER-GUIDE.md
+grep -n 'Open-file limit' docs/USER-GUIDE.md
+grep -n '10240' docs/USER-GUIDE.md
+grep -n 'fdlimit.rs' DOX.md
+grep -n 'cli_contract.rs' DOX.md
+cargo test --locked
 ```
 
 ## Escalate when
-- `tokio-rustls` client handshake over `UpstreamStream::Tls` (TLS-over-TLS to an `https` upstream proxy) hits a type/recursion or `Unpin` issue → stop, set Status: needs-human — reason: <exact compiler error>
-- `p12-keystore` or `rcgen` API differs from `../rusty-conduit` → stop, set Status: needs-human — reason: <exact API error>
+- A doc describes behaviour that the code from phases 0001–0004 contradicts (for example a default or key that the code does not have) → stop, set Status: needs-human — reason: quote the doc line and what the code does.
+- An old name appears in a code sample that cannot carry the word `deprecated` on the same line → stop, set Status: needs-human — reason: quote the sample and file:line.
 
 ## Log
 - (append-only, one line per event)
-- sub-task 1: copied ../rusty-conduit/src/mitm/{ca,signer,cache,mod}.rs to src/mitm/; adapted config field mitm_cert_cache_max_entries→mitm_cert_cache_max, default-cap assertion → DEFAULT_MITM_CERT_CACHE_MAX, local quiet_logger in cache tests (no http::test_support here); registered `pub mod mitm;` in src/lib.rs
-- sub-task 2: wrote src/http/mitm_tunnel.rs (MitmInterceptor, routed Dialer: Router decision → ProfileRegistry::chain_for → FailoverDialer::dial → tokio-rustls client over UpstreamStream; Routing::Fixed reuses the CONNECT-time upstream (h1/h2), Routing::PerRequest when router.has_url_rules(Http): routes each request with full https URL, redials when chain_key changes, HTTP/1.1 only); wired in src/http/mod.rs (pub mod mitm_tunnel, HttpProxy.mitm + with_mitm/mitm_enabled, dispatch → mitm_connect with 400/403 pre-200)
-- sub-task 3: blocked — needs src/socks/mod.rs (outside Scope: In); escalated, no socks files changed
-- [planner] answered escalation: added `src/socks/mod.rs` to `Scope: In` (and sub-task 3) for `pub mod web_guard;` and the `RelayGuard` hook in `SocksProxy::relay`; HTTP/1.1-only in per-request URL-rule MITM mode is approved. Reset phase-0005 and sub-task 3 to todo; continue phase-0005 from sub-task 3.
-- sub-task 3: ported src/socks/web_guard.rs (WebGuard, is_web_traffic, ClientHello ALPN parser; pure tests + duplex test of the guarded first chunk); src/socks/mod.rs: pub mod web_guard, GuardVerdict/RelayGuard, SocksProxy.guard + with_guard/has_guard, guarded_first_chunk in SocksProxy::relay (v4.rs:171/v5.rs:223 already route through relay, so they need no change); src/server.rs: EngineHandlers::with_mitm(interceptor, socks_block_web) installs WebGuard only with MITM, plus http_engine()/socks_engine(); src/lib.rs run(): MitmState::from_config (FATAL on error), MITM/SOCKS-guard INFO lines, cert reaper on the shutdown token
-- sub-task 4: wrote tests/mitm_proxy.rs (8 tests: MITM over direct/SOCKS5/HTTP CONNECT with route fields + unresolved hostnames; h2 via SOCKS5; per-request URL rules switching web→corp→direct→web in one tunnel incl. per-request block 403; PKCS#12 CA + TTL reuse + reaper eviction; lazy expiry; CertCache cap; --socks-block-web-in-mitm blocks HTTP and h2-ALPN TLS, allows raw TCP and imap-ALPN TLS; no guard without the flag)
-- Verify passed: cargo fmt --check, cargo clippy --all-targets -D warnings, cargo test
+- sub-task 1: updated `docs/USER-GUIDE.md` reference table, block-with-exceptions wording, flat TOML example, hot-reload/MITM references, and added `### Deprecated names` and `### Open-file limit` subsections.
+- sub-task 2: updated `docs/MITM-CA-GUIDE.md` (`cert_cache_max_entries = 10240`, `--mitm-cert-cache-max-entries`, `--socks-block-web`).
+- sub-task 3: updated `docs/MASTER-PLAN.md` option table, hot-reload sentence, and global filter note to new names and defaults.
+- sub-task 4: checked `README.md` — already had no legacy keys/tables.
+- sub-task 5: updated `DOX.md` `## Feature Map` with **Open-file limit**, **CLI family contract**, and deprecated-aliases note on **Configuration loading & validation**.
+- verify: all 8 commands in `## Verify` passed; closing phase-0005.
 
 ## Evidence
 - (append-only: command → observed result)
-- `cargo test --lib mitm` → test result: ok. 28 passed; 0 failed
-- `cargo check --lib` → Finished, 0 errors/warnings (TLS over UpstreamStream compiled without Unpin/recursion issues)
-- `cargo fmt --check` → exit 0; `cargo clippy --all-targets -- -D warnings` → Finished (only pre-existing manifest unused-dependency warning)
-- `grep -n "mod \|relay" src/socks/mod.rs` → 14:pub mod v4; 15:pub mod v5; 295: pub(crate) async fn relay( — module list and relay hook are in src/socks/mod.rs
-- `cargo test --lib socks` → test result: ok. 21 passed; 0 failed
-- `cargo test --lib` → test result: ok. 162 passed; 0 failed
-- `cargo test --test mitm_proxy` → test result: ok. 8 passed; 0 failed
-- Verify `cargo fmt --check` → rc=0
-- Verify `cargo clippy --all-targets -- -D warnings` → rc=0 (only pre-existing manifest warning: unused dependency `notify`)
-- Verify `cargo test` → rc=0: lib 162, main 0, mitm_proxy 8, mux_port 3, routing_rules 17, socks_proxy 10, upstream_proxies 14 passed; 0 failed
-- [planner Gate D] independently verified: `cargo fmt --check` exit 0, `cargo clippy --all-targets -- -D warnings` exit 0 (only pre-existing manifest unused-dependency warning), `cargo test` mitm_proxy 8 pass. Close commit `f5d104d` scope-clean (src/socks/mod.rs, src/socks/web_guard.rs, src/server.rs, src/lib.rs, tests/mitm_proxy.rs + the two ledger files). The phase-0005 scope change adding `src/socks/mod.rs` + `src/server.rs` to Scope: In (from the blocked→unblock escalation) is retroactively approved here as planner — both files are genuinely required for `pub mod web_guard;` and the `RelayGuard` hook in `SocksProxy::relay`. Phase-0005 approved.
+- `(! grep -rnE 'tcp-keepalive-idle|TCP_KEEPALIVE_IDLE|mitm-cert-cache-max([^-]|$)|MITM_CERT_CACHE_MAX([^_]|$)|cert_cache_max([^_]|$)|\[filter\]|\[tcp_keepalive\]' docs README.md | grep -vi deprecated) && (! grep -rnE 'max_connections = 1024|cert_cache_max_entries = 4096|mutually exclusive with --allow' docs README.md)` → exited 0 (no stray legacy names or old defaults).
+- `grep -n 'Deprecated names' docs/USER-GUIDE.md && grep -n 'Open-file limit' docs/USER-GUIDE.md && grep -n '10240' docs/USER-GUIDE.md && grep -n 'fdlimit.rs' DOX.md && grep -n 'cli_contract.rs' DOX.md && grep -c 'fdlimit.rs\|cli_contract.rs' DOX.md` → matched lines 150, 165, 132, 207 in `docs/USER-GUIDE.md`, lines 234, 235 (count `2`) in `DOX.md`.
+- `cargo test --locked` → 61 unit tests + 75 integration tests passed, 0 failed.

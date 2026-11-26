@@ -40,6 +40,9 @@ humantime = "2"
 # Errors
 thiserror = "2"
 
+[target.'cfg(unix)'.dependencies]
+rlimit = "0.12"
+
 [dev-dependencies]
 # Integration-test fixtures (origin servers, MITM/TLS clients, CA generation). The engine
 # owns the runtime HTTP/TLS stack; these stay pure-Rust (`ring` provider, no OpenSSL / aws-lc).

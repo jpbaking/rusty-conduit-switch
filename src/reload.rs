@@ -81,7 +81,7 @@ pub fn non_reloadable_changes(active: &Config, new: &Config) -> Vec<&'static str
     check(active.mitm_cert_ttl != new.mitm_cert_ttl, "mitm.cert_ttl");
     check(
         active.mitm_cert_cache_max != new.mitm_cert_cache_max,
-        "mitm.cert_cache_max",
+        "mitm.cert_cache_max_entries",
     );
     check(
         active.socks_block_web_in_mitm != new.socks_block_web_in_mitm,
