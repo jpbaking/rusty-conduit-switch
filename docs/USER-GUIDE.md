@@ -174,6 +174,38 @@ that threshold. If the limit still cannot hold `--max-connections`, it logs:
 NOTICE: open-file limit is <limit> but --max-connections <N> needs at least <needed>; only about <M> concurrent connections will fit. Raise `ulimit -n` (LimitNOFILE= under systemd) or lower --max-connections
 ```
 
+### Listen backlog (`somaxconn`)
+
+Each listener (HTTP and SOCKS) asks the kernel for a listen backlog of `4096`: the queue of
+connections that have finished the TCP handshake but that `rusty-conduit-switch` has not
+accepted yet. The kernel caps the request at its own limit:
+
+| OS | Limit | Default |
+| :--- | :--- | :--- |
+| Linux | `net.core.somaxconn` | `4096` (kernel 5.4 and later; `128` before) |
+| macOS | `kern.ipc.somaxconn` | `128` |
+| Windows | set by the OS | — |
+
+The queue only matters during connection bursts, such as many clients reconnecting at once
+after a network drop. When it is full, the kernel drops the new connection attempts and clients
+retry about a second later, which shows up as slow connects rather than errors. If you expect
+bursts larger than the limit, check it and raise it to `4096`:
+
+```sh
+# Linux (persist the setting in /etc/sysctl.d/)
+sysctl net.core.somaxconn
+sudo sysctl -w net.core.somaxconn=4096
+
+# macOS (resets at reboot)
+sysctl kern.ipc.somaxconn
+sudo sysctl -w kern.ipc.somaxconn=4096
+```
+
+A value above `4096` has no effect, because `rusty-conduit-switch` requests `4096`. The backlog
+is fixed when a listener opens, so restart `rusty-conduit-switch` after changing the limit. On
+Linux, a container has its own `net.core.somaxconn` (normally `4096`) unless it uses the host
+network; set it with `docker run --sysctl net.core.somaxconn=4096`.
+
 ---
 
 ## 4. The TOML configuration file
