@@ -1053,7 +1053,7 @@ impl Config {
         let mut out = Vec::new();
         if self.is_non_loopback_bind() {
             out.push(format!(
-                "SECURITY NOTICE: binding to non-loopback address {}; rusty-conduit-switch v1 has \
+                "SECURITY NOTICE: binding to non-loopback address {}; rusty-conduit-switch has \
                  NO inbound authentication, so anyone who can reach this address can use the proxy",
                 self.bind
             ));

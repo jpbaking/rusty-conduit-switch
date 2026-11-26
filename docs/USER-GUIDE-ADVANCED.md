@@ -23,7 +23,7 @@ Contents:
 9. [HTTPS MITM inspection](#9-https-mitm-inspection)
 10. [Logging](#10-logging)
 11. [Connection lifetime and TCP keepalive](#11-connection-lifetime-and-tcp-keepalive)
-12. [Protocol support (v1)](#12-protocol-support-v1)
+12. [Protocol support](#12-protocol-support)
 
 ---
 
@@ -567,7 +567,7 @@ settings are reloaded live.
 
 ---
 
-## 12. Protocol support (v1)
+## 12. Protocol support
 
 **Inbound protocols.** Plain HTTP proxy requests (`GET http://...`), HTTPS `CONNECT`, SOCKS4,
 SOCKS4a, and SOCKS5 `CONNECT` (IPv4, IPv6, and domain names). TCP only; there is no SOCKS

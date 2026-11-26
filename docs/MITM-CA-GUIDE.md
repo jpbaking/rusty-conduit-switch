@@ -39,10 +39,10 @@ This guide covers:
 - **Inspect only traffic you are authorized to inspect.** Decrypted logs can contain
   credentials, session tokens, and personal data. Protect `--http-access-log` files accordingly.
 - **Some applications pin certificates** (banking apps, OS update services, and some
-  messengers). They refuse intercepted connections. v1 cannot bypass MITM for specific
-  domains; for those clients, use an instance without MITM, or SOCKS (unless you enable
+  messengers). They refuse intercepted connections. MITM cannot yet be skipped for
+  specific domains; for those clients, use an instance without MITM, or SOCKS (unless you enable
   `--socks-block-web`).
-- **v1 has no proxy authentication.** Keep `--bind` on loopback (the default), or restrict
+- **There is no proxy authentication yet.** Keep `--bind` on loopback (the default), or restrict
   access with a firewall.
 
 ---

@@ -32,12 +32,12 @@ Multi-arch images (`linux/amd64` and `linux/arm64`, based on Ubuntu 26.04 LTS) a
 GitHub Container Registry on each release:
 
 ```sh
-# Publish to host loopback only (recommended: v1 has no inbound authentication)
+# Publish to host loopback only (recommended: there is no inbound authentication)
 docker run --rm \
   -p 127.0.0.1:3128:3128 \
   -p 127.0.0.1:1080:1080 \
   -v "$PWD/conf:/etc/rusty-conduit-switch:ro" \
-  ghcr.io/jpbaking/rusty-conduit-switch:1 \
+  ghcr.io/jpbaking/rusty-conduit-switch:2 \
   --config /etc/rusty-conduit-switch/config.toml --watch-config
 ```
 
@@ -267,7 +267,7 @@ rusty-conduit-switch --config config.toml --allow example.com,*.example.org
 rusty-conduit-switch --config config.toml --bind 0.0.0.0
 ```
 
-> **Note:** v1 has **no inbound authentication**. Binding to a non-loopback address prints a security notice at startup. Restrict access with your firewall and keep `--max-connections` bounded (see [Performance, Footprint & Sizing](PERFORMANCE-AND-SIZING.md)).
+> **Note:** There is **no inbound authentication**. Binding to a non-loopback address prints a security notice at startup. Restrict access with your firewall and keep `--max-connections` bounded (see [Performance, Footprint & Sizing](PERFORMANCE-AND-SIZING.md)).
 
 ### Reload without a restart
 

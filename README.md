@@ -31,7 +31,7 @@ Download a prebuilt package for Linux, macOS, or Windows (`amd64` / `arm64`) fro
 ```sh
 # Docker (multi-arch: linux/amd64, linux/arm64); see the Docker Guide for Compose
 docker run --rm -p 127.0.0.1:3128:3128 -p 127.0.0.1:1080:1080 \
-  -v "$PWD/conf:/etc/rusty-conduit-switch:ro" ghcr.io/jpbaking/rusty-conduit-switch:1 \
+  -v "$PWD/conf:/etc/rusty-conduit-switch:ro" ghcr.io/jpbaking/rusty-conduit-switch:2 \
   --config /etc/rusty-conduit-switch/config.toml --watch-config
 
 # Or build from source

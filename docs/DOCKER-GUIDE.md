@@ -26,7 +26,7 @@ another UID.
 | **Ports** | `3128` (HTTP/HTTPS) and `1080` (SOCKS4/4a/5) |
 | **Environment** | `RUSTY_CONDUIT_SWITCH_BIND=0.0.0.0`, so the listeners accept connections forwarded by Docker, and `MALLOC_ARENA_MAX=2`, which keeps memory low on hosts with many CPUs |
 
-Pin a major tag such as `:1` so you get fixes and features within that major version, but not
+Pin a major tag such as `:2` so you get fixes and features within that major version, but not
 breaking changes. To build the image yourself from a clone of the repository:
 
 ```sh
@@ -42,13 +42,13 @@ docker run -d --name rusty-conduit-switch --restart unless-stopped \
   -p 127.0.0.1:3128:3128 \
   -p 127.0.0.1:1080:1080 \
   -v "$PWD/conf:/etc/rusty-conduit-switch:ro" \
-  ghcr.io/jpbaking/rusty-conduit-switch:1 \
+  ghcr.io/jpbaking/rusty-conduit-switch:2 \
   --config /etc/rusty-conduit-switch/config.toml --watch-config
 ```
 
 - **Publish on `127.0.0.1`.** Inside the container the proxy listens on `0.0.0.0`, so the
   `SECURITY NOTICE` at startup is expected. What decides who can reach it is the host side of
-  `-p`: `-p 3128:3128` without an address exposes the proxy to your network, and v1 has **no
+  `-p`: `-p 3128:3128` without an address exposes the proxy to your network, and there is **no
   inbound authentication**.
 - **Flags and environment variables** work as usual: put flags after the image name, or pass
   `-e RUSTY_CONDUIT_SWITCH_*` variables.
@@ -80,11 +80,11 @@ Run the subcommands in a throwaway container with the same mount:
 
 ```sh
 docker run --rm -v "$PWD/conf:/etc/rusty-conduit-switch:ro" \
-  ghcr.io/jpbaking/rusty-conduit-switch:1 validate --config /etc/rusty-conduit-switch/config.toml
+  ghcr.io/jpbaking/rusty-conduit-switch:2 validate --config /etc/rusty-conduit-switch/config.toml
 # config OK: /etc/rusty-conduit-switch/config.toml profiles=3 rules=1
 
 docker run --rm -v "$PWD/conf:/etc/rusty-conduit-switch:ro" \
-  ghcr.io/jpbaking/rusty-conduit-switch:1 test-route --config /etc/rusty-conduit-switch/config.toml www.example.com:443
+  ghcr.io/jpbaking/rusty-conduit-switch:2 test-route --config /etc/rusty-conduit-switch/config.toml www.example.com:443
 # target=www.example.com:443 inbound=http table=[routing] rule=example-via-corp profile=corp chain=corp,direct upstream=http://corp-proxy:3128
 ```
 
@@ -93,7 +93,7 @@ still passes, and fails only when the proxy starts. To turn an AirSwitch backup 
 mount a writable directory:
 
 ```sh
-docker run --rm -v "$PWD/conf:/work" ghcr.io/jpbaking/rusty-conduit-switch:1 \
+docker run --rm -v "$PWD/conf:/work" ghcr.io/jpbaking/rusty-conduit-switch:2 \
   import-airswitch /work/OmegaOptions.bak -o /work/config.toml
 ```
 
@@ -178,7 +178,7 @@ docker run -d --name rusty-conduit-switch \
   -p 127.0.0.1:3128:3128 -p 127.0.0.1:1080:1080 \
   -v "$PWD/conf:/etc/rusty-conduit-switch:ro" \
   -v rusty-conduit-switch-logs:/var/log/rusty-conduit-switch \
-  ghcr.io/jpbaking/rusty-conduit-switch:1 --config /etc/rusty-conduit-switch/config.toml \
+  ghcr.io/jpbaking/rusty-conduit-switch:2 --config /etc/rusty-conduit-switch/config.toml \
   --http-access-log /var/log/rusty-conduit-switch/http.log \
   --socks-log /var/log/rusty-conduit-switch/socks.log
 
@@ -234,7 +234,7 @@ docker compose down
 ```yaml
 services:
   rusty-conduit-switch:
-    image: ghcr.io/jpbaking/rusty-conduit-switch:1
+    image: ghcr.io/jpbaking/rusty-conduit-switch:2
     restart: unless-stopped
     command: ["--config", "/etc/rusty-conduit-switch/config.toml", "--watch-config"]
     ports:
@@ -252,7 +252,7 @@ no ports, so nothing outside the network can use it:
 ```yaml
 services:
   proxy:
-    image: ghcr.io/jpbaking/rusty-conduit-switch:1
+    image: ghcr.io/jpbaking/rusty-conduit-switch:2
     restart: unless-stopped
     command: ["--config", "/etc/rusty-conduit-switch/config.toml", "--watch-config"]
     volumes:
@@ -310,7 +310,7 @@ target = ["corp", "direct"]
 ```yaml
 services:
   rusty-conduit-switch:
-    image: ghcr.io/jpbaking/rusty-conduit-switch:1
+    image: ghcr.io/jpbaking/rusty-conduit-switch:2
     restart: unless-stopped
     command: ["--config", "/etc/rusty-conduit-switch/config.toml", "--watch-config"]
     ports:
@@ -331,7 +331,7 @@ services:
       start_period: 5s
 
   corp-proxy:
-    image: ghcr.io/jpbaking/rusty-conduit:1
+    image: ghcr.io/jpbaking/rusty-conduit:2
     command: ["--log-level", "DEBUG"]
 
 secrets:
@@ -360,6 +360,6 @@ Edit `conf/config.toml` on the host and save: the change applies without a resta
 | A profile pointing at `127.0.0.1` fails | Inside the container, `127.0.0.1` is the container itself | Use `host.docker.internal` or the upstream's real address ([section 5](#5-reaching-upstream-proxies-from-a-container)) |
 | `FATAL MITM setup failed: failed to read MITM CA file ...: Permission denied` | The key file is not readable by the container's UID | Run as your own UID, or `sudo chown 10001` the key ([File ownership](#file-ownership-on-linux-hosts)) |
 | `Permission denied` opening a log file at startup | The container's UID cannot create files in the log directory | Use a named volume, or a host directory the container's UID can write ([File ownership](#file-ownership-on-linux-hosts)) |
-| Clients on other machines cannot connect | The ports are published on `127.0.0.1` | Publish on a LAN address or `0.0.0.0` only behind a firewall: v1 has no inbound authentication |
+| Clients on other machines cannot connect | The ports are published on `127.0.0.1` | Publish on a LAN address or `0.0.0.0` only behind a firewall: there is no inbound authentication |
 | `SECURITY NOTICE: binding to non-loopback address 0.0.0.0` at startup | Expected: the proxy listens on all interfaces inside the container | Control exposure with the host side of `-p` |
 | Memory is much higher than the sizing guide says | `MALLOC_ARENA_MAX` was overridden or unset, so glibc allocates a memory arena per worker thread | Keep the image default, `MALLOC_ARENA_MAX=2` ([section 8](#8-resource-limits-health-checks-and-hardening)) |

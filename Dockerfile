@@ -31,7 +31,7 @@ LABEL org.opencontainers.image.title="rusty-conduit-switch" \
       org.opencontainers.image.licenses="BSD-3-Clause"
 
 # Listen on all interfaces inside the container; publish ports on loopback unless you
-# intend to expose the proxy (v1 has no inbound authentication).
+# intend to expose the proxy (there is no inbound authentication).
 ENV RUSTY_CONDUIT_SWITCH_BIND=0.0.0.0
 
 # glibc gives every worker thread its own malloc arena, which multiplies memory on hosts with
