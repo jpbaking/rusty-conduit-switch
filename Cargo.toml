@@ -1,6 +1,6 @@
 [package]
 name = "rusty-conduit-switch"
-version = "0.0.1-beta.3"
+version = "1.0.0"
 edition = "2021"
 description = "Lightweight cross-platform HTTP/HTTPS and SOCKS4/4a/5 Auto Switch proxy server with optional HTTPS MITM inspection"
 license = "BSD-3-Clause"

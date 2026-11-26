@@ -1448,7 +1448,7 @@ dependencies = [
 
 [[package]]
 name = "rusty-conduit-switch"
-version = "0.0.1-beta.3"
+version = "1.0.0"
 dependencies = [
  "base64 0.22.1",
  "bytes",
