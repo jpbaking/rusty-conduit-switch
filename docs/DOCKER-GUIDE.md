@@ -186,7 +186,7 @@ docker run -d --name rusty-conduit-switch \
   --http-access-log /var/log/rusty-conduit-switch/http.log \
   --socks-log /var/log/rusty-conduit-switch/socks.log
 
-docker exec rusty-conduit-switch tail -f /var/log/rusty-conduit-switch/access.log
+docker exec rusty-conduit-switch tail -f /var/log/rusty-conduit-switch/http.log
 ```
 
 - The image's `/var/log/rusty-conduit-switch` belongs to the container user (UID `10001`), so a
