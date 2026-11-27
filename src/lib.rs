@@ -35,11 +35,12 @@ use std::process::ExitCode;
 use std::sync::Arc;
 
 use config::{CliInput, Command, Config, ConfigError, Inbound};
+use http::ErrorPageTemplate;
 use logging::{AccessLogConfig, AccessLogger, LogLevel, Logger};
 use router::{ParsedTarget, RouteRequest, Router};
 #[cfg(test)]
 use server::StubHandlers;
-use server::{EngineHandlers, ProtocolHandlers, RoutingState, Server};
+use server::{EngineHandlers, ProtocolHandlers, RoutingState, Server, SharedRouting};
 
 /// Exit code used for `FATAL` startup errors and failed subcommands.
 pub const EXIT_FATAL: u8 = 1;
@@ -56,7 +57,7 @@ pub fn load_config(cli: CliInput) -> Result<Config, (ConfigError, LogLevel)> {
     Ok(cfg)
 }
 
-/// Emit the startup banner, configuration summary, and any `INFO` notices.
+/// Emit the startup banner, configuration summary, `INFO` notices, and MITM upstream-TLS warnings.
 pub fn log_startup(cfg: &Config, logger: &Logger) {
     logger.info(format!(
         "rusty-conduit-switch v{} starting",
@@ -65,6 +66,9 @@ pub fn log_startup(cfg: &Config, logger: &Logger) {
     logger.info(format!("config: {}", cfg.summary()));
     for notice in all_notices(cfg) {
         logger.info(notice);
+    }
+    for warning in cfg.mitm_tls_warnings() {
+        logger.info(warning);
     }
 }
 
@@ -122,22 +126,26 @@ pub async fn run(cfg: Config, cli: CliInput, logger: Logger) -> ExitCode {
             return ExitCode::from(EXIT_FATAL);
         }
     };
-    let mut engines =
-        EngineHandlers::from_routing(Arc::clone(&routing), access.clone(), logger.clone());
+    let error_page = match cfg.error_page_template() {
+        Ok(t) => t,
+        Err(e) => {
+            logger.fatal(format!("config invalid: {e}"));
+            let _ = access.shutdown().await;
+            logger.flush();
+            return ExitCode::from(EXIT_FATAL);
+        }
+    };
     if let Some(m) = &mitm_state {
         m.cache.set_logger(logger.clone());
-        logger.info(format!(
-            "MITM enabled: CA \"{}\" valid until {}; leaf certificate TTL {}",
-            m.ca_subject,
-            logging::format_timestamp(m.ca_not_after),
-            humantime::format_duration(cfg.mitm_cert_ttl)
-        ));
-        engines = engines.with_mitm(Arc::new(m.interceptor.clone()), false);
     }
-    if cfg.socks_block_web {
-        logger.info("SOCKS web blocking enabled: HTTP/HTTPS over SOCKS is rejected");
-        engines = engines.with_socks_block_web();
-    }
+    let engines = build_engines(
+        Arc::clone(&routing),
+        &cfg,
+        mitm_state.as_ref(),
+        error_page,
+        &access,
+        &logger,
+    );
     let handlers: Arc<dyn ProtocolHandlers> = Arc::new(engines);
     let server = match Server::from_options(&cfg.server_options(), handlers, logger.clone()).await {
         Ok(s) => s.with_runtime(Arc::clone(&routing)),
@@ -198,6 +206,39 @@ pub async fn run(cfg: Config, cli: CliInput, logger: Logger) -> ExitCode {
     };
     logger.flush();
     code
+}
+
+/// Build the routed HTTP and SOCKS engines over `routing`, with the loaded `error_page`
+/// template (or the built-in page) for proxy-generated HTTP errors, HTTPS interception when
+/// `mitm` is present, and the SOCKS web guard when `--socks-block-web` is set.
+pub fn build_engines(
+    routing: SharedRouting,
+    cfg: &Config,
+    mitm: Option<&mitm::MitmState>,
+    error_page: ErrorPageTemplate,
+    access: &AccessLogger,
+    logger: &Logger,
+) -> EngineHandlers {
+    if let Some(path) = &cfg.error_page {
+        logger.info(format!("custom error page enabled: {}", path.display()));
+    }
+    // Only proxy-generated errors use the template; upstream responses pass through untouched.
+    let mut engines = EngineHandlers::from_routing(routing, access.clone(), logger.clone())
+        .with_error_page(error_page);
+    if let Some(m) = mitm {
+        logger.info(format!(
+            "MITM enabled: CA \"{}\" valid until {}; leaf certificate TTL {}",
+            m.ca_subject,
+            logging::format_timestamp(m.ca_not_after),
+            humantime::format_duration(cfg.mitm_cert_ttl)
+        ));
+        engines = engines.with_mitm(Arc::new(m.interceptor.clone()), false);
+    }
+    if cfg.socks_block_web {
+        logger.info("SOCKS web blocking enabled: HTTP/HTTPS over SOCKS is rejected");
+        engines = engines.with_socks_block_web();
+    }
+    engines
 }
 
 /// Start the hot-reload triggers for a server run from `cfg`: `SIGHUP` (Unix) whenever
@@ -277,7 +318,8 @@ fn load_subcommand_config(name: &'static str, cli: CliInput) -> Result<Config, C
 
 /// `validate --config <PATH>`: exit 0 when the configuration is valid, 1 otherwise.
 /// The offline checks startup would fail on (see [`preflight`]), in startup order: the
-/// access logs, the routing state (which resolves every upstream password), and the MITM CA.
+/// access logs, the routing state (which resolves every upstream password), the MITM CA, and
+/// the `--error-page` template.
 pub fn preflight_checks(cfg: &Config) -> Result<(), String> {
     if let Some(path) = &cfg.http_access_log {
         preflight::check_log_path("--http-access-log", path)?;
@@ -287,7 +329,8 @@ pub fn preflight_checks(cfg: &Config) -> Result<(), String> {
     }
     RoutingState::from_input(&cfg.routing_input(), upstream::DialerOptions::default())
         .map_err(|e| e.to_string())?;
-    preflight::check_mitm(&cfg.mitm_options())
+    preflight::check_mitm(&cfg.mitm_options())?;
+    cfg.error_page_template().map(|_| ())
 }
 
 pub fn cmd_validate(cli: CliInput, out: &mut dyn Write, err: &mut dyn Write) -> u8 {
@@ -318,6 +361,9 @@ pub fn cmd_validate(cli: CliInput, out: &mut dyn Write, err: &mut dyn Write) -> 
             );
             for notice in all_notices(&cfg) {
                 let _ = writeln!(out, "{notice}");
+            }
+            for warning in cfg.mitm_tls_warnings() {
+                let _ = writeln!(out, "{warning}");
             }
             if !settings_only {
                 if let Some(notice) =
@@ -647,5 +693,115 @@ mod tests {
         assert!(buf.is_empty());
         token.cancel();
         assert!(run.await.unwrap().drained);
+    }
+
+    fn quiet_logger() -> Logger {
+        Logger::with_writer(LogLevel::Quiet, Box::new(std::io::sink()))
+    }
+
+    fn missing_error_page() -> std::path::PathBuf {
+        std::env::temp_dir().join("rusty-conduit-switch-missing-error-page.html")
+    }
+
+    #[test]
+    fn missing_error_page_fails_preflight_naming_the_path() {
+        let missing = missing_error_page();
+        let cfg = Config {
+            error_page: Some(missing.clone()),
+            ..Config::default()
+        };
+        cfg.validate()
+            .expect("settings alone stay valid (--settings-only)");
+        let err = preflight_checks(&cfg).unwrap_err();
+        assert!(
+            err.starts_with(&format!("cannot read --error-page {}", missing.display())),
+            "{err}"
+        );
+        assert_eq!(preflight_checks(&Config::default()), Ok(()));
+    }
+
+    #[test]
+    fn validate_reports_missing_error_page_unless_settings_only() {
+        let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let missing = missing_error_page();
+        let path = temp_toml(
+            "error-page",
+            &format!("error_page = {:?}\n", missing.display().to_string()),
+        );
+        let p = path.to_str().unwrap();
+        let (mut out, mut err) = (Vec::new(), Vec::new());
+        let code = cmd_validate(cli(&["validate", "--config", p]), &mut out, &mut err);
+        assert_eq!(code, EXIT_FATAL);
+        let err = String::from_utf8(err).unwrap();
+        assert!(
+            err.contains(&format!("cannot read --error-page {}", missing.display())),
+            "{err}"
+        );
+
+        let (mut out, mut err) = (Vec::new(), Vec::new());
+        let code = cmd_validate(
+            cli(&["validate", "--settings-only", "--config", p]),
+            &mut out,
+            &mut err,
+        );
+        assert_eq!(code, 0, "{}", String::from_utf8_lossy(&err));
+        std::fs::remove_file(path).ok();
+    }
+
+    #[tokio::test]
+    async fn missing_error_page_fails_startup_with_fatal_exit() {
+        let cfg = Config {
+            bind: "127.0.0.1".parse().unwrap(),
+            error_page: Some(missing_error_page()),
+            ..Config::default()
+        };
+        let code = run(cfg, CliInput::default(), quiet_logger()).await;
+        assert_eq!(code, ExitCode::from(EXIT_FATAL));
+    }
+
+    #[tokio::test]
+    async fn build_engines_installs_the_error_page() {
+        let page = std::env::temp_dir().join(format!(
+            "rusty-conduit-switch-error-page-{}.html",
+            std::process::id()
+        ));
+        std::fs::write(&page, "<p>custom {{status}} {{reason}} [{{target}}]</p>").unwrap();
+        let cfg = Config {
+            error_page: Some(page.clone()),
+            ..Config::default()
+        };
+        let logger = quiet_logger();
+        let access = AccessLogger::start(
+            AccessLogConfig::new(LogLevel::Quiet, cfg.log_format, None, None),
+            logger.clone(),
+        )
+        .await
+        .unwrap();
+        let routing =
+            RoutingState::from_input(&cfg.routing_input(), upstream::DialerOptions::default())
+                .unwrap()
+                .shared();
+
+        let template = cfg.error_page_template().unwrap();
+        let engines = build_engines(Arc::clone(&routing), &cfg, None, template, &access, &logger);
+        let installed = engines.http_engine().error_page();
+        assert!(!installed.is_builtin());
+        assert_eq!(
+            installed.as_str(),
+            "<p>custom {{status}} {{reason}} [{{target}}]</p>"
+        );
+
+        let default_cfg = Config::default();
+        let engines = build_engines(
+            routing,
+            &default_cfg,
+            None,
+            default_cfg.error_page_template().unwrap(),
+            &access,
+            &logger,
+        );
+        assert!(engines.http_engine().error_page().is_builtin());
+        let _ = access.shutdown().await;
+        let _ = std::fs::remove_file(&page);
     }
 }

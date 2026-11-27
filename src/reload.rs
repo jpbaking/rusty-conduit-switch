@@ -47,7 +47,8 @@ pub use rusty_conduit_engine::routing::{RoutingSetupError, RuntimeConfig, Shared
 // ---------------------------------------------------------------------------
 
 /// Names of the non-reloadable fields whose values differ between `active` and `new`
-/// (`bind`, `http_port`, `socks_port`, `max_connections`, `watch_*`, `mitm.*`, `logging.*`).
+/// (`bind`, `http_port`, `socks_port`, `max_connections`, `watch_*`, `mitm.*`,
+/// `socks_block_web`, `error_page`, `logging.*`).
 pub fn non_reloadable_changes(active: &Config, new: &Config) -> Vec<&'static str> {
     let mut out = Vec::new();
     let mut check = |changed: bool, name: &'static str| {
@@ -84,9 +85,15 @@ pub fn non_reloadable_changes(active: &Config, new: &Config) -> Vec<&'static str
         "mitm.cert_cache_max_entries",
     );
     check(
+        active.mitm_insecure_hosts != new.mitm_insecure_hosts,
+        "mitm.insecure_hosts",
+    );
+    check(active.mitm_insecure != new.mitm_insecure, "mitm.insecure");
+    check(
         active.socks_block_web != new.socks_block_web,
         "socks_block_web",
     );
+    check(active.error_page != new.error_page, "error_page");
     check(active.log_level != new.log_level, "logging.level");
     check(active.log_format != new.log_format, "logging.format");
     check(
@@ -115,7 +122,10 @@ pub fn pin_non_reloadable(active: &Config, new: Config) -> Config {
         mitm_ca_passphrase_file: active.mitm_ca_passphrase_file.clone(),
         mitm_cert_ttl: active.mitm_cert_ttl,
         mitm_cert_cache_max: active.mitm_cert_cache_max,
+        mitm_insecure_hosts: active.mitm_insecure_hosts.clone(),
+        mitm_insecure: active.mitm_insecure,
         socks_block_web: active.socks_block_web,
+        error_page: active.error_page.clone(),
         log_level: active.log_level,
         log_format: active.log_format,
         http_access_log: active.http_access_log.clone(),
@@ -579,6 +589,43 @@ mod tests {
             r.reload_once(ReloadTrigger::Manual).unwrap().ignored.len(),
             3
         );
+    }
+
+    #[test]
+    fn mitm_upstream_tls_changes_require_restart() {
+        let (r, path, cap) = reloader("mitm-tls", BASE, &[]);
+        std::fs::write(
+            &path,
+            format!("{BASE}[mitm]\ninsecure = true\ninsecure_hosts = [\"dev.local\"]\n"),
+        )
+        .unwrap();
+        let s = r.reload_once(ReloadTrigger::Manual).unwrap();
+        assert_eq!(s.ignored, vec!["mitm.insecure_hosts", "mitm.insecure"]);
+        assert!(
+            cap.text()
+                .contains("ignored until restart: mitm.insecure_hosts, mitm.insecure"),
+            "{}",
+            cap.text()
+        );
+        // Pinned: the running config keeps strict upstream verification.
+        let active = r.active.lock().unwrap();
+        assert!(!active.mitm_insecure);
+        assert!(active.mitm_insecure_hosts.is_empty());
+    }
+
+    #[test]
+    fn error_page_change_requires_restart() {
+        let (r, path, cap) = reloader("error-page", BASE, &[]);
+        std::fs::write(&path, format!("error_page = \"/new/page.html\"\n{BASE}")).unwrap();
+        let s = r.reload_once(ReloadTrigger::Manual).unwrap();
+        assert_eq!(s.ignored, vec!["error_page"]);
+        assert!(
+            cap.text().contains("ignored until restart: error_page"),
+            "{}",
+            cap.text()
+        );
+        // Pinned: the running config keeps the error page it started with.
+        assert_eq!(r.active.lock().unwrap().error_page, None);
     }
 
     #[test]

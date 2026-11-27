@@ -2,7 +2,7 @@
 
 This guide covers every setting in `rusty-conduit-switch`: configuration precedence, the
 subcommands, the TOML file, upstream profiles, routing rules, failover, hot-reload, AirSwitch
-import, HTTPS MITM, logging, and connection lifetime.
+import, HTTPS MITM, logging, connection lifetime, and custom proxy error pages.
 
 - New to `rusty-conduit-switch`? Start with the **[Basic User Guide](USER-GUIDE-BASIC.md)**.
 - For RAM/CPU budgets, `ulimit -n` and `somaxconn` limits, and cap mechanics, see
@@ -24,6 +24,7 @@ Contents:
 10. [Logging](#10-logging)
 11. [Connection lifetime and TCP keepalive](#11-connection-lifetime-and-tcp-keepalive)
 12. [Protocol support](#12-protocol-support)
+13. [Custom proxy error pages](#13-custom-proxy-error-pages)
 
 ---
 
@@ -57,7 +58,10 @@ environment variables accept `true`/`false`, `yes`/`no`, `on`/`off`, and `1`/`0`
 | `--mitm-ca-passphrase-file <PATH>` | `RUSTY_CONDUIT_SWITCH_MITM_CA_PASSPHRASE_FILE` | `mitm.ca_passphrase_file` | *(none)* | No | File holding the CA passphrase (trailing newline trimmed) |
 | `--mitm-cert-ttl <DURATION>` | `RUSTY_CONDUIT_SWITCH_MITM_CERT_TTL` | `mitm.cert_ttl` | `1h` | No | In-memory TTL for generated MITM leaf certificates (minimum `10s`) |
 | `--mitm-cert-cache-max-entries <N>` | `RUSTY_CONDUIT_SWITCH_MITM_CERT_CACHE_MAX_ENTRIES` | `mitm.cert_cache_max_entries` | `10240` | No | Maximum cached MITM leaf certificates (`0` = unlimited) |
+| `--mitm-insecure-host <RULE>` | `RUSTY_CONDUIT_SWITCH_MITM_INSECURE_HOST` | `mitm.insecure_hosts` | *(none)* | No | Under MITM, accept invalid/self-signed upstream TLS certs for matching destinations (IP, CIDR, FQDN, or `*.domain`; same syntax as `--allow`); repeatable or comma-separated; CLI/env replaces the TOML list; an invalid rule is fatal |
+| `--mitm-insecure` | `RUSTY_CONDUIT_SWITCH_MITM_INSECURE` | `mitm.insecure` | `false` | No | **Unsafe** blind trust: skip upstream TLS certificate verification for ALL MITM targets; enabled if set in CLI/env **or** TOML; takes precedence over `--mitm-insecure-host` |
 | `--socks-block-web` | `RUSTY_CONDUIT_SWITCH_SOCKS_BLOCK_WEB` | `socks_block_web` | `false` | No | Reject HTTP/HTTPS traffic over SOCKS4/4a/5 (works with or without MITM) |
+| `--error-page <PATH>` | `RUSTY_CONDUIT_SWITCH_ERROR_PAGE` | `error_page` | *(built-in page)* | No | HTML template for proxy-generated HTTP error pages (placeholders `{{status}}`, `{{reason}}`, `{{message}}`, `{{target}}`); upstream responses are never altered ([section 13](#13-custom-proxy-error-pages)) |
 | `--log-level <LEVEL>` | `RUSTY_CONDUIT_SWITCH_LOG_LEVEL` | `logging.level` | `INFO` | No | `QUIET`, `FATAL`, `ERROR`, `INFO`, `DEBUG`, `VERBOSE` |
 | `--log-format <FMT>` | `RUSTY_CONDUIT_SWITCH_LOG_FORMAT` | `logging.format` | `text` | No | Access/SOCKS log format: `text` (logfmt) or `json` (NDJSON) |
 | `--http-access-log <PATH>` | `RUSTY_CONDUIT_SWITCH_HTTP_ACCESS_LOG` | `logging.http_access_log` | *(none)* | No | Write HTTP/HTTPS access records to a file |
@@ -100,7 +104,7 @@ tells them apart by the first byte of each connection.
 to drain.
 
 **Exit codes.** `0` on a clean shutdown or a successful subcommand, `1` on a fatal startup
-error (invalid configuration, unreadable CA, port already in use) or a failed subcommand, and
+error (invalid configuration, unreadable CA or `--error-page` file, port already in use) or a failed subcommand, and
 `2` for a command-line usage error.
 
 ---
@@ -123,8 +127,9 @@ as URL rules that cannot match some traffic, are printed too.
 
 It also checks the files and variables the config names, as startup would: it resolves every
 upstream password (a `password_env` variable must be set and a `password_file` readable), loads
-the MITM CA (files, passphrase, validity, and that the key matches the certificate), and checks
-that each log file can be opened, without creating it. It prints the open-file `NOTICE` startup
+the MITM CA (files, passphrase, validity, and that the key matches the certificate), checks
+that each log file can be opened, without creating it, and reads the `--error-page` template
+(the error names the path). It prints the open-file `NOTICE` startup
 would log, too.
 
 `--settings-only` skips those checks, for checking a config away from the host it runs on, for
@@ -181,6 +186,8 @@ watch_debounce = "300ms"
 connect_timeout = "10s"
 max_connections = 4096
 socks_block_web = false
+# Optional custom HTML template for proxy-generated error pages (default: built-in page):
+# error_page = "/etc/rusty-conduit-switch/error.html"
 
 tcp_keepalive = "60s"
 tcp_keepalive_interval = "10s"
@@ -196,6 +203,10 @@ block = ["*.ads.example"]
 # ca_passphrase_file = "/etc/rusty-conduit-switch/ca.pass"
 cert_ttl = "1h"
 cert_cache_max_entries = 10240
+# Skip upstream TLS verification only for these lab / self-signed origins:
+# insecure_hosts = ["dev.internal", "*.lab.example", "10.20.0.0/16"]
+# UNSAFE: skip upstream TLS verification for every destination:
+# insecure = false
 
 [logging]
 level = "INFO"
@@ -424,7 +435,8 @@ started with, and fully validates the result (including self-loops) before anyth
 `tcp_keepalive_interval`, and `tcp_keepalive_retries`.
 
 **Need a restart:** `bind`, `http_port`, `socks_port`, `max_connections`, `watch_config`,
-`watch_debounce`, `mitm.*`, and `logging.*`. If one of these changes, the reload still applies
+`watch_debounce`, `mitm.*` (including `mitm.insecure` and `mitm.insecure_hosts`), `socks_block_web`,
+`error_page`, and `logging.*`. If one of these changes, the reload still applies
 the live sections and logs which fields were ignored until restart.
 
 In a container, mount the config **directory**, not the single file: an editor that saves by
@@ -508,7 +520,14 @@ rusty-conduit-switch --config config.toml --mitm-ca-cert ca.pem --mitm-ca-key ca
 
 - Applies to HTTPS `CONNECT` tunnels on the HTTP port. The upstream TLS connection runs over
   whichever profile the routing rules pick, including `socks5`, `socks4a`, `http`, and
-  `https` proxies. Origin certificates are verified against the OS trust store.
+  `https` proxies. Origin certificates are verified against the OS trust store; invalid
+  origin certificates are rejected. The startup `config:` line shows the mode as
+  `mitm_upstream_tls=strict|insecure_hosts(N)|insecure_all`:
+  - `--mitm-insecure-host <RULE>` accepts invalid or self-signed certs only for matching
+    targets (exact domain, `*.domain`, IP, or CIDR); every other target is still verified.
+  - `--mitm-insecure` accepts any upstream cert for every target (blind trust). Use it only on
+    isolated test networks: anyone on the path to the origin can impersonate it.
+  - While MITM is enabled, either mode logs a `WARN:` line at startup and in `validate` output.
 - Leaf certificates are ECDSA P-256, valid from 5 minutes before signing until
   `--mitm-cert-ttl` + 5 minutes. They are cached in memory only, up to
   `--mitm-cert-cache-max-entries` entries.
@@ -586,3 +605,48 @@ SOCKS4a, and SOCKS5 `CONNECT` (IPv4, IPv6, and domain names). TCP only; there is
 HTTPS MITM applies only to `CONNECT` tunnels on the HTTP port. TLS carried over SOCKS is
 relayed without interception; use `--socks-block-web` to stop web traffic from bypassing MITM
 that way.
+
+---
+
+## 13. Custom proxy error pages
+
+When `rusty-conduit-switch` itself answers an HTTP request with an error, it sends an HTML
+page. Examples: a malformed request (`400`), a destination denied by `--allow` / `--block` or
+routed to the `block` target (`403`), an upstream it cannot reach or verify (`502`), and a
+timeout (`504`). By default this is a small, unbranded built-in page. Replace it with your own
+template:
+
+```sh
+rusty-conduit-switch --error-page /etc/rusty-conduit-switch/error.html
+# or: RUSTY_CONDUIT_SWITCH_ERROR_PAGE=/etc/rusty-conduit-switch/error.html
+# or, in the TOML file (top level): error_page = "/etc/rusty-conduit-switch/error.html"
+```
+
+The template is a UTF-8 file read once at startup. These placeholders are replaced in every
+page, and every value is HTML-escaped:
+
+| Placeholder | Value |
+| :--- | :--- |
+| `{{status}}` | Numeric status code, for example `502` |
+| `{{reason}}` | Standard reason phrase, for example `Bad Gateway` |
+| `{{message}}` | The proxy's explanation of the error |
+| `{{target}}` | The requested URL or `host:port` (never includes userinfo); empty when unknown |
+
+```html
+<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>{{status}} {{reason}}</title></head>
+<body><h1>{{status}} {{reason}}</h1><p>{{message}}</p><p><code>{{target}}</code></p></body></html>
+```
+
+- The template applies to every proxy-generated HTTP error: plain forwarding, `CONNECT`, and
+  decrypted MITM requests. Pages are sent as `text/html; charset=utf-8` with
+  `Cache-Control: no-store`.
+- **Responses from an upstream origin or upstream proxy are never altered**, error statuses
+  included: a `404` or `500` from the origin reaches the client exactly as sent.
+- SOCKS has no HTTP error responses, so the template does not apply to it.
+- The startup `config:` line shows `error_page=<path>` or `error_page=builtin`. An unreadable
+  file is a `FATAL` startup error (exit `1`); `validate` reports it too, unless
+  `--settings-only`.
+- `error_page` is not hot-reloaded: changing the key, or editing the template file, takes
+  effect only after a restart. A reload that changes the key logs
+  `ignored until restart: error_page`.

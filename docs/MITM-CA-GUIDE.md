@@ -173,8 +173,12 @@ Rules for the CA options:
 - Give only one of `--mitm-ca-passphrase` and `--mitm-ca-passphrase-file`.
 - `--mitm-cert-ttl` must be at least `10s`.
 
-Upstream (origin) certificates are always checked against the operating system's trust store,
-so interception never hides an invalid origin certificate from you.
+By default, upstream (origin) certificates are checked against the operating system's trust
+store, so interception never hides an invalid origin certificate from you. For lab or
+self-signed origins, `--mitm-insecure-host <RULE>` (TOML `[mitm] insecure_hosts`) skips that
+check only for matching hosts, `*.domain` wildcards, IPs, or CIDRs, and `--mitm-insecure`
+(TOML `[mitm] insecure = true`) skips it for every destination. Blind trust is **unsafe**:
+anyone on the path to the origin can impersonate it. Both log a `WARN:` line at startup.
 
 ### 3.1 MITM and routing
 

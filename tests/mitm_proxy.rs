@@ -549,6 +549,12 @@ async fn http1(tls: TlsStream<TcpStream>) -> Sender {
 
 /// `GET path` on an HTTP/1.1 MITM tunnel; returns `(status, body)`.
 async fn get(sender: &mut Sender, authority: &str, path: &str) -> (u16, String) {
+    let (status, _content_type, body) = get_typed(sender, authority, path).await;
+    (status, body)
+}
+
+/// Like [`get`], also returning the response `Content-Type` (empty when absent).
+async fn get_typed(sender: &mut Sender, authority: &str, path: &str) -> (u16, String, String) {
     sender.ready().await.unwrap();
     let req = Request::get(path)
         .header(hyper::header::HOST, authority)
@@ -559,8 +565,17 @@ async fn get(sender: &mut Sender, authority: &str, path: &str) -> (u16, String) 
         .unwrap()
         .unwrap();
     let status = resp.status().as_u16();
+    let content_type = resp
+        .headers()
+        .get(hyper::header::CONTENT_TYPE)
+        .map(|v| v.to_str().unwrap().to_string())
+        .unwrap_or_default();
     let body = resp.into_body().collect().await.unwrap().to_bytes();
-    (status, String::from_utf8(body.to_vec()).unwrap())
+    (
+        status,
+        content_type,
+        String::from_utf8(body.to_vec()).unwrap(),
+    )
 }
 
 fn presented_serial(tls: &TlsStream<TcpStream>) -> Vec<u8> {
@@ -748,9 +763,18 @@ target = "block"
         "/ads/banner",
         "/via-socks/3",
     ] {
-        bodies.push(get(&mut sender, &target, path).await);
+        bodies.push(get_typed(&mut sender, &target, path).await);
     }
     drop(sender);
+    // The `block` rule's 403 is proxy-generated: rendered with the built-in HTML error page.
+    let (status, content_type, blocked) = bodies.remove(4);
+    assert_eq!(status, 403);
+    assert_eq!(content_type, "text/html; charset=utf-8");
+    assert!(
+        blocked.contains("403") && blocked.contains("destination blocked"),
+        "{blocked}"
+    );
+    let bodies: Vec<(u16, String)> = bodies.into_iter().map(|(s, _, b)| (s, b)).collect();
     assert_eq!(
         bodies,
         [
@@ -758,7 +782,6 @@ target = "block"
             (200, "hit 2 GET /via-socks/2".to_string()),
             (200, "hit 3 GET /via-http/1".to_string()),
             (200, "hit 4 GET /plain".to_string()),
-            (403, "destination blocked\n".to_string()),
             (200, "hit 5 GET /via-socks/3".to_string()),
         ]
     );
