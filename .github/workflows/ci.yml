@@ -21,6 +21,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo fmt --check
       - run: cargo clippy --all-targets --locked -- -D warnings
+      - run: python3 scripts/check-pure-rust-crypto.py
 
   test:
     name: Test (${{ matrix.name }})

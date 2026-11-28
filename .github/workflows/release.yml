@@ -25,6 +25,7 @@ jobs:
       - run: cargo fmt --check
       - run: cargo clippy --all-targets --locked -- -D warnings
       - run: cargo test --locked
+      - run: python3 scripts/check-pure-rust-crypto.py
 
   build:
     name: Build (${{ matrix.pkg }})
@@ -74,26 +75,29 @@ jobs:
         with:
           key: release-${{ matrix.pkg }}
 
-      # `--version` reports the tag (leading `v` stripped, pre-release suffix kept) via the
-      # compile-time CONDUIT_RELEASE_VERSION; local builds report `<Cargo version>-dev`.
-      - name: Build release binary (Unix)
-        if: runner.os != 'Windows'
+      # `--version` reports the tag (without its leading `v`, pre-release suffix included)
+      # through the compile-time CONDUIT_RELEASE_VERSION. Bash runs on every matrix runner
+      # (Git Bash on Windows); GITHUB_ENV carries the value into the build step.
+      - name: Derive release version
         shell: bash
         run: |
           set -euo pipefail
-          export CONDUIT_RELEASE_VERSION="${GITHUB_REF_NAME#v}"
-          echo "CONDUIT_RELEASE_VERSION=${CONDUIT_RELEASE_VERSION}"
-          cargo build --release --locked --target ${{ matrix.target }}
+          VERSION="${GITHUB_REF_NAME#v}"
+          BASE="${VERSION%%-*}"
+          CRATE="$(tr -d '\r' < Cargo.toml | sed -n 's/^version = "\(.*\)"$/\1/p' | head -n 1)"
+          if [ "${BASE}" != "${CRATE}" ]; then
+            echo "::error::tag ${GITHUB_REF_NAME} (base ${BASE}) does not match Cargo.toml version ${CRATE}"
+            exit 1
+          fi
+          echo "CONDUIT_RELEASE_VERSION=${VERSION}" >> "${GITHUB_ENV}"
+          echo "release version: ${VERSION}"
 
-      - name: Build release binary (Windows)
-        if: runner.os == 'Windows'
-        shell: pwsh
+      - name: Build release binary
+        shell: bash
         run: |
-          $ErrorActionPreference = "Stop"
-          $env:CONDUIT_RELEASE_VERSION = $env:GITHUB_REF_NAME -replace '^v', ''
-          Write-Host "CONDUIT_RELEASE_VERSION=$env:CONDUIT_RELEASE_VERSION"
+          set -euo pipefail
+          test -n "${CONDUIT_RELEASE_VERSION}"
           cargo build --release --locked --target ${{ matrix.target }}
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Package archive (Unix)
         if: matrix.archive == 'tar.gz'

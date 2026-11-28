@@ -1,68 +1,59 @@
-# GOAL — Align rusty-conduit-switch with the rusty-conduit CLI family
+# GOAL — Optimization roadmap Phase 1 for rusty-conduit-switch
 
 ## Goal
-- Goal ID: 20261126-cli-consistency
-- Outcome: rusty-conduit-switch uses the same flag, env, TOML, help-text, and default conventions as rusty-conduit and rusty-conduit-ssh (old names kept as deprecated aliases), raises its open-file limit at startup, and locks the conventions with a CLI contract test.
-- Done when: `cargo fmt --check && cargo clippy --all-targets --locked -- -D warnings && cargo test --locked` exits 0; `rusty-conduit-switch --help` shows `--tcp-keepalive <DURATION>`, `--mitm-cert-cache-max-entries <N>` with `[default: 10240]`, and `--max-connections` with `[default: 4096]`; the old flags, env vars, and TOML tables still work and log a deprecation NOTICE; `tests/cli_contract.rs` passes; docs describe the new names.
+- Goal ID: 20261128-optimization-phase1
+- Outcome: rusty-conduit-switch release builds use thin LTO, one codegen unit, and stripped symbols; Linux glibc binaries cap malloc at two arenas unless `MALLOC_ARENA_MAX` is set; the startup banner reports `config::app_version()`; `--mitm-bypass-host` help matches the family; the contract test covers the four missing shared flags; and releases abort when the tag disagrees with `Cargo.toml`, with the pure-Rust crypto check in CI.
+- Done when: `cargo fmt --check && cargo clippy --all-targets --locked -- -D warnings && cargo test --locked && python3 scripts/check-pure-rust-crypto.py` exits 0, and every `## Verify` block of phase-0001 and phase-0002 passes.
 - Goal status: completed
 - Goal status meaning: drafting | approved | executing | blocked-on-human | in-review | awaiting-acceptance | completed | abandoned
-- Last completed phase: phase-0006
+- Last completed phase: phase-0002
 
 ## Execution
 - Execution mode: delegated
 - Planner tier: Claude Code (claude-opus-5-5)
-- Executor tier: agy --model gemini-4-neon-medium via the herdr-subagent skill
-- Full verification: cargo fmt --check && cargo clippy --all-targets --locked -- -D warnings && cargo test --locked
+- Executor tier: agy --model gemini-4-neon-medium via the herdr-subagent skill (fallback: claude --model opus --effort medium via herdr-subagent while agy is rate-limited)
+- Full verification: cargo fmt --check && cargo clippy --all-targets --locked -- -D warnings && cargo test --locked && python3 scripts/check-pure-rust-crypto.py
 
 ## Git
 - Repository: yes
 - Strategy: isolated-branch
 - Starting branch: main
-- Work branch: goal/20261126-cli-consistency
-- Baseline commit: fad20b7abaf2bb9fed82fa78961cff45afed8096
-- Starting upstream at start: origin/main@fad20b7abaf2bb9fed82fa78961cff45afed8096
+- Work branch: goal/20261128-optimization-phase1
+- Baseline commit: 8084dcba25d8c0f561cc18ff4f25fcabd6134299
+- Starting upstream at start: origin/main@8084dcba25d8c0f561cc18ff4f25fcabd6134299
 - Work upstream at start: none
 
 ## Phases
-- [done] phase-0001 — Rename keepalive and MITM-cache flags with deprecated aliases; align help text and defaults
-- [done] phase-0002 — Flat TOML keys with deprecated [tcp_keepalive] and [filter] tables
-- [done] phase-0003 — Raise the open-file limit at startup
-- [done] phase-0004 — CLI family contract test
-- [done] phase-0005 — Update user docs and DOX Feature Map
-- [done] phase-0006 — Fix stale filter comments in Config
+- [done] phase-0001 — Release profile and malloc arena cap
+- [done] phase-0002 — Version banner, CLI contract rows, release tag guard, and pure-Rust crypto gate
 
 ## Handoff
-- Current position: completed
+- Current position: completed; accepted by the user 2026-11-28
 - Next role: planner
 - Next action: none
-- Last verified evidence: Gate D re-run: fmt, clippy -D warnings, cargo test --locked (136 passed); no 'mutually exclusive' left in src, docs, README
+- Last verified evidence: Gate D → fmt/clippy clean, 164 tests passed, PURE_RUST_CRYPTO_OK, Linux Docker clippy exit 0
 - Blockers: none
 
 ## Review
-- Reviewed by: Claude Code (claude-opus-5-5), planner
-- Verification result: pass — cargo fmt --check exit 0; cargo clippy --all-targets --locked -- -D warnings exit 0; cargo test --locked 136 passed, 0 failed
-- Diff reviewed: fad20b7abaf2bb9fed82fa78961cff45afed8096..HEAD read in full (per-phase diffs); every changed path is inside a phase Scope: In or the ledger; all commits carry Goal-ID; no merges
-- Findings: two, fixed — untagged serde enum hid `unknown field` errors (phase-0002 fix-up sub-task 6); Config comments called allow/block mutually exclusive (remediation phase-0006)
+- Reviewed by: planner, Claude Code (claude-opus-5-5)
+- Verification result: pass — cargo fmt --check, cargo clippy --all-targets --locked -D warnings, cargo test --locked (164 passed, 0 failed), python3 scripts/check-pure-rust-crypto.py → PURE_RUST_CRYPTO_OK; phase-0002 Verify block exit 0; rust:1-bookworm clippy --bins → exit 0
+- Diff reviewed: 8084dcb..HEAD, read in full; non-ledger paths (Cargo.toml, src/main.rs, src/lib.rs log_startup, src/config.rs bypass doc comment, docs/PERFORMANCE-AND-SIZING.md, scripts/check-pure-rust-crypto.py, .github/workflows/ci.yml, .github/workflows/release.yml, tests/cli_contract.rs, DOX.md) all within phase Scope: In; removed phase-0003..0006 are the prior completed ledger replaced at approval
+- Findings: 1 nit fixed — run-on DOX release sentence rewritten (phase-0002 planner sub-task); executor's rustfmt fix-up of the banner call (sub-task 7) accepted
 
 ## Log
-- created ledger with 5 phases; replaces the completed ledger 20261125-rusty-conduit-switch (kept in Git history)
-- sibling ledgers with the same Goal ID: rusty-conduit-ssh and rusty-conduit (run after this one)
-- user decisions: one ledger per repo; goal/<id> branch per repo; defaults max_connections 4096 and MITM cache 10240 in all three CLIs; add an open-file limit raise; listen-backlog/somaxconn work is a separate follow-up goal in rusty-conduit-engine
-- user approved goal, branches, and execution (Gates A-C); baseline fad20b7abaf2bb9fed82fa78961cff45afed8096 on main; isolated branch goal/20261126-cli-consistency
-- execution started; phase-0001 delegated to agy (gemini-4-neon-medium) in herdr pane sub-switch-p1
-- phase-0001 completed: renamed keepalive and MITM-cache flags with hidden deprecated aliases, aligned help text and defaults (4096 / 10240), updated summary/reload labels, added unit tests, and passed full verification.
-- planner accepted phase-0001 after re-running Verify and reading the diff; phase-0002 delegated to the same agy session
-- phase-0002 completed: added flat TOML keys (`tcp_keepalive`, `tcp_keepalive_interval`, `tcp_keepalive_retries`, `allow`, `block`, `mitm.cert_cache_max_entries`) with deprecated `[tcp_keepalive]`, `[filter]`, and `mitm.cert_cache_max` compatibility + NOTICEs, added unit tests, and passed full verification.
-- planner reviewed phase-0002 (Verify re-run: 129 tests pass); reopened it for fix-up sub-task 6 (clear errors for typos in the deprecated [tcp_keepalive] table)
-- phase-0002 sub-task 6 completed: replaced untagged derive on `FileKeepaliveField` with hand-written `Deserialize` impl, added error-message assertions, re-ran Verify, and closed phase-0002.
-- planner accepted phase-0002 after fix-up; phase-0003 delegated to the same agy session
-- phase-0003 completed: added `rlimit` Unix dependency, created `src/fdlimit.rs`, wired `fdlimit::apply` into `run()`, verified manual `ulimit -n 256` raise to 184320, and passed full verification.
-- planner accepted phase-0003 (src/fdlimit.rs differs from the spec only by rustfmt wrapping; it is now the canonical copy for the sibling repos); phase-0004 delegated
-- phase-0004 completed: added `tests/cli_contract.rs` locking shared flags, value names, env vars, help text, defaults, and binary exit codes; all 3 contract tests and full suite (136 tests) pass.
-- planner accepted phase-0004; phase-0005 delegated
-- phase-0005 completed: updated `docs/USER-GUIDE.md`, `docs/MITM-CA-GUIDE.md`, `docs/MASTER-PLAN.md`, and `DOX.md` Feature Map (`README.md` needed no changes); all Verify greps and `cargo test --locked` pass.
-- planner accepted phase-0005; Gate D passed; goal awaiting user acceptance
-- planner reopened the goal from awaiting-acceptance: remediation phase-0006 for stale "mutually exclusive" Config comments (found while reviewing rusty-conduit-ssh)
-- planner completed phase-0006
-- Gate D re-run passed after phase-0006; goal awaiting user acceptance
-- user accepted the result ("proceed how you see best"); squash checks passed; squashed onto main as one commit with `git merge --squash`; goal/20261126-cli-consistency kept with the full phase history; nothing pushed
+- created ledger with 2 phases; replaces the completed ledger 20261126-cli-consistency (kept in Git history)
+- source plan: rusty-conduit-series/docs/OPTIMIZATION.md, roadmap Phase 1 (items P-01, P-02, B-09, B-10, M-05)
+- sibling ledgers with the same Goal ID: rusty-conduit (runs first; canonical contract rows and release steps), rusty-conduit-ssh, rusty-conduit-gui, and the rusty-conduit-series workspace
+- user decisions: roadmap Phase 1 only; delegated to agy neon medium via herdr
+- planner decisions: B-07 (RoutingCounters pruning and unnamed-rule keys) and P-11 (one Router compile per startup and reload) are deferred to the engine v0.7.0 goal — the engine v0.6.0 `RoutingCounters` has no prune API and `RoutingState` exposes neither its `Router` nor its notices, and this crate never reads the counters; Docker BuildKit cache mounts and builder/runtime distro alignment are deferred as low value
+- user approved the goal (Gate A) on 2026-11-28
+- Gate B: isolated branch goal/20261128-optimization-phase1 created from main at baseline 8084dcba25d8c0f561cc18ff4f25fcabd6134299; user asked to commit only and not start execution yet
+- resumed 2026-11-28 by planner (claude-opus-5-5); evidence: branch and baseline consistent, HEAD = approve commit 56270b5, clean tree, validator OK; origin/goal/20261128-optimization-phase1 holds the approve commit, so automated squash is prohibited
+- Gate C: user started execution; executor agy neon medium, fallback claude opus medium while agy is rate-limited
+- planner fixed phase-0002 rusty-conduit line refs (77-100 → 78-101) after rusty-conduit fcc6cd4
+- delegated phase-0001 to agy (herdr-subagent)
+- executor completed phase-0001 (release profile, Linux glibc malloc arena cap, sizing guide update); all automated checks passed
+- planner accepted phase-0001 (Verify re-run: 164 passed; diff in scope and verbatim; Linux Docker clippy exit 0); delegated phase-0002 to agy (herdr-subagent)
+- executor completed phase-0002 (version banner via `config::app_version()`, `--mitm-bypass-host` help alignment, 4 shared CLI contract rows, release tag guard, pure-Rust crypto check in CI/release, and DOX.md updates); all `## Verify` checks passed
+- planner accepted phase-0002 (Verify re-run, diff read, in scope); Gate D finding (DOX wording) fixed; Gate D passed; status awaiting-acceptance
+- user accepted 2026-11-28; branch kept unsquashed (published on origin); user asked to squash-merge into main, delete the goal branch, and push

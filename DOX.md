@@ -220,7 +220,7 @@ When the owning doc lies inside a nested root, make the update there — but say
 - Config precedence is fixed: CLI flags > `RUSTY_CONDUIT_SWITCH_*` env vars > `--config` TOML > defaults.
 - HTTPS MITM stays opt-in and never auto-generates a CA.
 - User-facing docs live in `README.md` and `docs/` (`USER-GUIDE-BASIC.md`, `USER-GUIDE-ADVANCED.md`, `MITM-CA-GUIDE.md`, `PERFORMANCE-AND-SIZING.md`, `DOCKER-GUIDE.md`); update them when CLI flags, TOML schema, behavior, or the `Dockerfile` change. Release archives ship `README.md`, `LICENSE`, and the whole `docs/` folder.
-- Verification (mirrors `.github/workflows/ci.yml`): `cargo fmt --check`, `cargo clippy --all-targets --locked -- -D warnings`, `cargo test --locked`. CI also runs `docker build` against `Dockerfile`; releases are cut by `.github/workflows/release.yml` on version tags, which builds with `CONDUIT_RELEASE_VERSION` = tag minus leading `v` (so `--version` matches the tag) and marks `-` suffixed tags as pre-releases.
+- Verification (mirrors `.github/workflows/ci.yml`): `cargo fmt --check`, `cargo clippy --all-targets --locked -- -D warnings`, `cargo test --locked`, `python3 scripts/check-pure-rust-crypto.py`. CI also runs `docker build` against `Dockerfile`; releases are cut by `.github/workflows/release.yml` on version tags: the tag's `X.Y.Z` base must equal the `Cargo.toml` version (the build fails otherwise), every build sets `CONDUIT_RELEASE_VERSION` = tag minus leading `v` (so `--version` matches the tag), and `-` suffixed tags become pre-releases.
 
 ## User Preferences
 

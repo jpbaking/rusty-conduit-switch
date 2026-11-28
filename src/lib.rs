@@ -61,7 +61,7 @@ pub fn load_config(cli: CliInput) -> Result<Config, (ConfigError, LogLevel)> {
 pub fn log_startup(cfg: &Config, logger: &Logger) {
     logger.info(format!(
         "rusty-conduit-switch v{} starting",
-        env!("CARGO_PKG_VERSION")
+        config::app_version()
     ));
     logger.info(format!("config: {}", cfg.summary()));
     for notice in all_notices(cfg) {

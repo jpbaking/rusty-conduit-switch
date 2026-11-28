@@ -398,8 +398,8 @@ pub struct CliArgs {
     )]
     pub mitm_insecure_host: Vec<String>,
 
-    /// Never intercept TLS for matching destinations (IP, CIDR, FQDN, or *.domain): they are
-    /// tunneled opaquely even with MITM enabled; repeatable or comma-separated
+    /// Exclude matching destinations (IP, CIDR, FQDN, or *.domain) from MITM interception: they
+    /// get an opaque CONNECT tunnel instead; repeatable or comma-separated
     #[arg(
         long = "mitm-bypass-host",
         value_name = "RULE",

@@ -1,77 +1,93 @@
-# phase-0001 — Rename keepalive and MITM-cache flags with deprecated aliases; align help text and defaults
+# phase-0001 — Release profile and malloc arena cap
 
 - Status: done
 - Owner: executor
 - Depends on: none
-- Goal: Make every shared CLI flag in `src/config.rs` match the family's names, value names, help text, and defaults, keeping the two renamed flags as hidden deprecated aliases.
-- Done when: `cargo test --locked` passes and `cargo run -q -- --help` shows the help lines listed in sub-task 3.
-- Pattern to follow: `src/config.rs:360-368` and `src/config.rs:430-437` (the hidden `--socks-block-web-in-mitm` alias and how `from_matches` picks primary vs legacy by `ValueSource`)
+- Goal: Add an optimized `[profile.release]` and cap glibc malloc arenas at 2 on Linux when `MALLOC_ARENA_MAX` is unset, and say so in the sizing guide.
+- Done when: `cargo test --locked` passes, `Cargo.toml` has the exact release profile from sub-task 1, `src/main.rs` matches sub-task 2, and the sizing guide sentence from sub-task 3 is in place.
+- Pattern to follow: the `MALLOC_ARENA_MAX` comment in `Dockerfile` (around line 36) (the comment explaining why `MALLOC_ARENA_MAX=2` is set; reuse its reasoning in the code comment)
 
 ## Context
-rusty-conduit and rusty-conduit-ssh are the reference. The switch differs in two flag names, its value names, several help strings, and two defaults. The user has decided the new defaults: `max_connections` 4096 (was 1024) and MITM cert cache 10240 (was 4096). Renamed flags must keep working: old CLI flag and old env var stay as hidden aliases, and using them adds a NOTICE line at startup.
-Precedence between new and old names: new CLI > old CLI > new env > old env (the same order as the socks-block-web alias).
-Do NOT rename internal `Config` fields (`tcp_keepalive_idle`, `mitm_cert_cache_max`); only user-visible names change. TOML changes are phase-0002, not this phase.
-clap strips a trailing period from a one-paragraph doc comment, so the help strings below have no final period.
-
-Help text table (flag and value name → rendered help):
-- `--config <PATH>`: `Optional TOML configuration file path` (keep `global = true`)
-- `--socks-port <PORT>`: `SOCKS4/4a/5 proxy port, 0 to disable [default: 1080]`
-- `--max-connections <N>`: `Maximum concurrent client connections; excess connections are closed immediately, 0 = unlimited [default: 4096]`
-- `--tcp-keepalive <DURATION>`: `Idle time before TCP keepalive probes start on client and upstream sockets, 0 = disabled [default: 60s]`
-- `--tcp-keepalive-interval <DURATION>`: `Time between unanswered TCP keepalive probes [default: 10s]`
-- `--tcp-keepalive-retries <N>`: `Unanswered TCP keepalive probes before the connection is closed [default: 5]`
-- `--allow <RULE>`: two doc lines `Allowlist of destinations (IP, CIDR, FQDN, or *.domain); repeatable or comma-separated.` / `When combined with --block, serves as exceptions to the blocklist.`
-- `--block <RULE>`: two doc lines `Blocklist of destinations (IP, CIDR, FQDN, or *.domain); repeatable or comma-separated.` / `Combine with --allow to carve out exceptions.`
-- `--mitm-ca-cert <PATH>`: `Path to PEM-encoded CA certificate (enables MITM together with --mitm-ca-key)`
-- `--mitm-ca-key <PATH>`: `Path to PEM-encoded CA private key`
-- `--mitm-ca-p12 <PATH>`: `Path to PKCS#12 (.p12/.pfx) CA bundle (enables MITM)`
-- `--mitm-ca-passphrase <STR>`: `Passphrase for the PKCS#12 bundle or encrypted PEM key (prefer the env var or a passphrase file)`
-- `--mitm-cert-ttl <DURATION>`: `In-memory TTL for generated MITM leaf certs, e.g. 30m, 1h, 3600s [default: 1h]`
-- `--mitm-cert-cache-max-entries <N>`: `Maximum cached MITM leaf certificates; expired then oldest entries are evicted, 0 = unlimited [default: 10240]`
-- `--socks-block-web`: `Reject HTTP/HTTPS traffic over SOCKS4/4a/5 (works with or without MITM)`
-- `--watch-debounce` and `--connect-timeout`: change `value_name` from `DUR` to `DURATION`; keep their help text.
+Release builds currently use Cargo defaults (`lto = false`, `codegen-units = 16`, no strip), so nothing is inlined across the `rusty-conduit-engine` crate boundary. The planner chose `lto = "thin"`, `codegen-units = 1`, `strip = "symbols"`; do not pick other values.
+glibc gives every worker thread its own malloc arena; on many-core Linux that costs ~220 KB per open tunnel instead of ~26 KB. Only the Docker image sets `MALLOC_ARENA_MAX=2` today. glibc reads `MALLOC_ARENA_MAX` itself at startup, so when the variable is set the binary must leave it alone.
+`libc` is already a `[target.'cfg(unix)'.dependencies]` entry in `Cargo.toml`, and the bin target can use it. `libc::mallopt` and `libc::M_ARENA_MAX` exist only for `target_os = "linux"` + `target_env = "gnu"`; that code is not compiled on macOS, so the planner checks it in a Linux container afterwards.
 
 ## Scope
-- In: `src/config.rs`, `src/reload.rs`
-- Out: `src/lib.rs`, `tests/`, `docs/`, `README.md`, `DOX.md`, the TOML structs (`FileKeepaliveConfig`, `FileFilterConfig`, `FileMitmConfig`, `FileConfig`) and their merge code
+- In: `Cargo.toml`, `src/main.rs`, `docs/PERFORMANCE-AND-SIZING.md`
+- Out: `src/lib.rs`, `Dockerfile` (keep its `ENV MALLOC_ARENA_MAX=2`), `Cargo.lock`, `.github/`, every other doc
 
 ## Sub-tasks
-1. [done] Defaults: in `src/config.rs` set `DEFAULT_MAX_CONNECTIONS` to `4096`; rename `DEFAULT_MITM_CERT_CACHE_MAX` to `DEFAULT_MITM_CERT_CACHE_MAX_ENTRIES` with value `10_240` and update its uses (find them with `grep -n DEFAULT_MITM_CERT_CACHE_MAX src/*.rs`); in the unit test near `src/config.rs:1155` change the expected values to `4096` and `10_240` — done when: `grep -n 'DEFAULT_MITM_CERT_CACHE_MAX\b' src/*.rs` prints nothing and `grep -n '10_240' src/config.rs` prints the constant.
-2. [done] Renames in `CliArgs`: rename field `tcp_keepalive_idle` to `tcp_keepalive` (long `--tcp-keepalive`, env `RUSTY_CONDUIT_SWITCH_TCP_KEEPALIVE`); rename field `mitm_cert_cache_max` to `mitm_cert_cache_max_entries` (long `--mitm-cert-cache-max-entries`, env `RUSTY_CONDUIT_SWITCH_MITM_CERT_CACHE_MAX_ENTRIES`). Add two hidden legacy fields shaped like `socks_block_web_in_mitm`: `tcp_keepalive_idle: Option<Duration>` (long `tcp-keepalive-idle`, env `RUSTY_CONDUIT_SWITCH_TCP_KEEPALIVE_IDLE`, `hide = true`, `value_parser = humantime::parse_duration`, doc `/// Deprecated alias for --tcp-keepalive`) and `mitm_cert_cache_max: Option<usize>` (long `mitm-cert-cache-max`, env `RUSTY_CONDUIT_SWITCH_MITM_CERT_CACHE_MAX`, `hide = true`, doc `/// Deprecated alias for --mitm-cert-cache-max-entries`). In `CliInput` add `pub deprecated: Vec<String>`. In `from_matches`, make `args` mutable and, for each pair (primary id, legacy id): if the legacy `value_source` is `Some(_)`, push the notice text below; if the primary source is `None`, or the primary is `EnvVariable` and the legacy is `CommandLine`, copy the legacy value into the primary field. Notice texts, exactly: `NOTICE: --tcp-keepalive-idle / RUSTY_CONDUIT_SWITCH_TCP_KEEPALIVE_IDLE is deprecated; use --tcp-keepalive / RUSTY_CONDUIT_SWITCH_TCP_KEEPALIVE` and `NOTICE: --mitm-cert-cache-max / RUSTY_CONDUIT_SWITCH_MITM_CERT_CACHE_MAX is deprecated; use --mitm-cert-cache-max-entries / RUSTY_CONDUIT_SWITCH_MITM_CERT_CACHE_MAX_ENTRIES`. Add `pub deprecations: Vec<String>` to `Config` (default `Vec::new()`), set it from `cli.deprecated` in `Config::merge`, and append its entries at the end of `Config::notices()`. Update the merge code that read `a.tcp_keepalive_idle` / `a.mitm_cert_cache_max` to read the new field names, and change the validation message `--tcp-keepalive-idle must be` to `--tcp-keepalive must be` — done when: `cargo build` succeeds and `cargo run -q -- --tcp-keepalive-idle 0s validate 2>&1 | head -1` fails only because `--config` is missing (not because of an unknown flag).
-3. [done] Help text and value names: set every doc comment and `value_name` listed under "Help text table" in `## Context` exactly as written — done when: `cargo run -q -- --help | grep -c 'DUR>'` prints `0` and `cargo run -q -- --help | grep -F 'mutually exclusive'` prints nothing.
-4. [done] Startup summary and reload label: in `Config::summary()` (near `src/config.rs:1015`) rename the key `mitm_cert_cache_max=` to `mitm_cert_cache_max_entries=`; in `src/reload.rs:84` change the label `"mitm.cert_cache_max"` to `"mitm.cert_cache_max_entries"` — done when: `grep -n 'mitm_cert_cache_max=' src/config.rs` prints nothing.
-5. [done] Unit tests for the aliases: in the `mod tests` of `src/config.rs`, next to the existing env test near line 1246, add tests that (a) `--tcp-keepalive-idle 0s` sets `cfg.tcp_keepalive_idle` to zero and `cfg.notices()` contains the keepalive deprecation NOTICE, (b) `--mitm-cert-cache-max 7` sets `cfg.mitm_cert_cache_max == 7` with its NOTICE, (c) `--tcp-keepalive 30s --tcp-keepalive-idle 5s` keeps 30s, (d) the new `--tcp-keepalive 0s` produces no deprecation NOTICE. Reuse the `load(&[...])` helper used at `src/config.rs:1820` — done when: `cargo test --locked --lib config` passes.
+1. [done] Append this block at the very end of `Cargo.toml`, after a blank line, exactly: (block 1 below) — done when: `grep -c '^\[profile.release\]' Cargo.toml` prints `1` and `cargo build --locked` succeeds.
+   Block 1:
+   ```toml
+   # Thin LTO with one codegen unit inlines across the rusty-conduit-engine crate boundary;
+   # stripped symbols keep the release binary and image small.
+   [profile.release]
+   lto = "thin"
+   codegen-units = 1
+   strip = "symbols"
+   ```
+2. [done] Replace the whole of `src/main.rs` with exactly: (block 1 below) — done when: `cargo build --locked` succeeds and `grep -c 'libc::mallopt(libc::M_ARENA_MAX, 2)' src/main.rs` prints `1`.
+   Block 1:
+   ```rust
+   use std::process::ExitCode;
+
+   fn main() -> ExitCode {
+       cap_malloc_arenas();
+       rusty_conduit_switch::main_entry()
+   }
+
+   /// glibc gives every worker thread its own malloc arena, which multiplies memory on hosts with
+   /// many CPUs (about 8x per open connection); two arenas keep it low with no measurable
+   /// throughput cost. glibc applies an explicit `MALLOC_ARENA_MAX` itself, so that one wins.
+   #[cfg(all(target_os = "linux", target_env = "gnu"))]
+   fn cap_malloc_arenas() {
+       if std::env::var_os("MALLOC_ARENA_MAX").is_none() {
+           // SAFETY: runs first in `main`, before any other thread exists; `mallopt` takes
+           // integer arguments and touches no Rust-managed memory.
+           unsafe {
+               libc::mallopt(libc::M_ARENA_MAX, 2);
+           }
+       }
+   }
+
+   #[cfg(not(all(target_os = "linux", target_env = "gnu")))]
+   fn cap_malloc_arenas() {}
+   ```
+3. [done] In `docs/PERFORMANCE-AND-SIZING.md`, replace exactly this text: `The container image sets `MALLOC_ARENA_MAX=2`. For the prebuilt Linux binaries, set it in the environment (for example `Environment=MALLOC_ARENA_MAX=2` in a `systemd` unit) to get the low figures on any CPU count.` with exactly: `On Linux, the binary caps glibc at two arenas itself when `MALLOC_ARENA_MAX` is not set, so the prebuilt binaries and the container image (which also sets `MALLOC_ARENA_MAX=2`) get the low figures on any CPU count. Set `MALLOC_ARENA_MAX` to another value to override it.` Change nothing else in the file — done when: `grep -c 'caps glibc at two arenas itself' docs/PERFORMANCE-AND-SIZING.md` prints `1` and `grep -c 'For the prebuilt Linux binaries, set it' docs/PERFORMANCE-AND-SIZING.md` prints `0`.
 
 ## Verify
 ```sh
 cargo fmt --check
 cargo clippy --all-targets --locked -- -D warnings
 cargo test --locked
-cargo run -q -- --help | grep -F -- '--tcp-keepalive <DURATION>'
-cargo run -q -- --help | grep -F '[default: 10240]'
-cargo run -q -- --help | grep -F 'closed immediately, 0 = unlimited [default: 4096]'
-! cargo run -q -- --help | grep -F -- '--tcp-keepalive-idle'
+grep -c '^\[profile.release\]' Cargo.toml
+grep -c 'caps glibc at two arenas itself' docs/PERFORMANCE-AND-SIZING.md
+git diff --exit-code -- Cargo.lock src/lib.rs Dockerfile
 ```
+- manual (planner only, needs Docker): `docker run --rm -v "$PWD":/src -w /src rust:1-bookworm cargo clippy --bins --locked -- -D warnings` exits 0, which compiles the Linux-only branch.
 
 ## Escalate when
-- An existing test outside `src/config.rs` fails because it uses an old flag or env name in a way the alias does not cover → stop, set Status: needs-human — reason: name the test and the failure.
-- `Config` cannot hold `deprecations` without breaking `reload.rs` field-by-field comparisons or the manual `Debug` impl → stop, set Status: needs-human — reason: paste the compiler error.
-- clap rejects two args sharing a prefix (`--mitm-cert-cache-max` vs `--mitm-cert-cache-max-entries`) → stop, set Status: needs-human — reason: paste the clap error.
+- `cargo build --locked` fails because `Cargo.lock` would change → stop, set Status: needs-human — reason: paste the error (no new dependency should be needed).
+- The sentence in sub-task 3 is not found verbatim → stop, set Status: needs-human — reason: paste the paragraph under "Memory on many-core Linux" as it is now.
+- clippy reports a lint on the new code → stop, set Status: needs-human — reason: paste the lint; do not add `#[allow]`.
 
 ## Log
 - (append-only, one line per event)
-- sub-task 1: updated `DEFAULT_MAX_CONNECTIONS` to 4096, renamed `DEFAULT_MITM_CERT_CACHE_MAX` to `DEFAULT_MITM_CERT_CACHE_MAX_ENTRIES` = 10_240, and updated `defaults_when_nothing_is_set` assertions in `src/config.rs`.
-- sub-task 2: renamed CLI flags/env vars to `--tcp-keepalive` and `--mitm-cert-cache-max-entries`, added hidden deprecated aliases with precedence and deprecation notices in `CliInput`/`Config`, and updated validation message in `src/config.rs`.
-- sub-task 3: updated all CLI doc comments and `value_name` attributes in `src/config.rs` to match the Help text table.
-- sub-task 4: renamed `mitm_cert_cache_max=` to `mitm_cert_cache_max_entries=` in `Config::summary()` (`src/config.rs`) and `"mitm.cert_cache_max"` to `"mitm.cert_cache_max_entries"` in `non_reloadable_changes()` (`src/reload.rs`).
-- sub-task 5: added `deprecated_cli_aliases_and_precedence` unit test in `src/config.rs` covering `--tcp-keepalive-idle`, `--mitm-cert-cache-max`, precedence, and new `--tcp-keepalive`.
-- verify: all 7 commands in `## Verify` passed; closing phase-0001.
+- sub-task 1: appended `[profile.release]` (`lto = "thin"`, `codegen-units = 1`, `strip = "symbols"`) to `Cargo.toml`
+- sub-task 2: replaced `src/main.rs` with `cap_malloc_arenas()` using `libc::mallopt(libc::M_ARENA_MAX, 2)` on Linux gnu when `MALLOC_ARENA_MAX` is unset
+- sub-task 3: updated `docs/PERFORMANCE-AND-SIZING.md` line 64 to document built-in Linux glibc arena cap and `MALLOC_ARENA_MAX` override
+- verify: all automated `## Verify` commands passed; manual Docker check left for planner
 
 ## Evidence
 - (append-only: command → observed result)
-- `grep -nE 'DEFAULT_MITM_CERT_CACHE_MAX\b' src/*.rs; grep -n '10_240' src/config.rs` → first printed nothing (exit 1); second printed `64:pub const DEFAULT_MITM_CERT_CACHE_MAX_ENTRIES: usize = 10_240;` and `1157: assert_eq!(cfg.mitm_cert_cache_max, 10_240);`.
-- `cargo build && cargo run -q -- --tcp-keepalive-idle 0s validate 2>&1 | head -1` → build succeeded; printed `config invalid: the \`validate\` subcommand requires --config <PATH>`.
-- `cargo run -q -- --help | grep -c 'DUR>'` and `cargo run -q -- --help | grep -F 'mutually exclusive'` → printed `0` and nothing (exit 1); full `--help` matches Help text table.
-- `grep -n 'mitm_cert_cache_max=' src/config.rs` → printed nothing (exit 1).
-- `cargo test --locked --lib config` → 25 passed, 0 failed.
-- `cargo fmt --check && cargo clippy --all-targets --locked -- -D warnings && cargo test --locked && cargo run -q -- --help | grep -F -- '--tcp-keepalive <DURATION>' && cargo run -q -- --help | grep -F '[default: 10240]' && cargo run -q -- --help | grep -F 'closed immediately, 0 = unlimited [default: 4096]' && ! cargo run -q -- --help | grep -F -- '--tcp-keepalive-idle'` → exited 0 (all unit + integration tests passed; help assertions matched).
+- `grep -c '^\[profile.release\]' Cargo.toml && cargo build --locked` → `1` and `Finished dev profile [unoptimized + debuginfo] target(s) in 0.13s` (exit 0)
+- `cargo build --locked && grep -c 'libc::mallopt(libc::M_ARENA_MAX, 2)' src/main.rs` → `Finished dev profile [unoptimized + debuginfo] target(s) in 0.48s` and `1` (exit 0)
+- `grep -c 'caps glibc at two arenas itself' docs/PERFORMANCE-AND-SIZING.md` / `grep -c 'For the prebuilt Linux binaries, set it' docs/PERFORMANCE-AND-SIZING.md` → `1` / `0`
+- `cargo fmt --check` → exit 0 (no formatting issues)
+- `cargo clippy --all-targets --locked -- -D warnings` → exit 0 (`Finished dev profile in 0.64s`, 0 warnings)
+- `cargo test --locked` → exit 0 (all unit, integration, and doc tests passed; 0 failed)
+- `grep -c '^\[profile.release\]' Cargo.toml` → `1` (exit 0)
+- `grep -c 'caps glibc at two arenas itself' docs/PERFORMANCE-AND-SIZING.md` → `1` (exit 0)
+- `git diff --exit-code -- Cargo.lock src/lib.rs Dockerfile` → exit 0 (no diff)
+- planner (claude-opus-5-5): rust:1-bookworm `rustup component add clippy && cargo clippy --bins --locked -- -D warnings` → exit 0 (Linux glibc branch compiles clean)

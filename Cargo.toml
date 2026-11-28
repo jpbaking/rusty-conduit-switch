@@ -57,3 +57,10 @@ rcgen = { version = "0.14", default-features = false, features = ["crypto", "pem
 p12-keystore = "0.4"
 x509-parser = "0.18"
 time = { version = "0.3", features = ["formatting", "macros", "local-offset"] }
+
+# Thin LTO with one codegen unit inlines across the rusty-conduit-engine crate boundary;
+# stripped symbols keep the release binary and image small.
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = "symbols"
