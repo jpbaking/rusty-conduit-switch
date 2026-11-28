@@ -18,7 +18,7 @@ Owns `tests/`. Behavior under test is owned by `../src/` (and the `rusty-conduit
 - `cargo test --locked` (CI runs it on Linux x86_64, macOS arm64, and Windows x86_64).
 
 ## Feature Map
-- **Routing engine & subcommands** — every condition type, unified/split tables, bypass, composite profiles, failover, global filter, `validate` / `test-route`. Start: `routing_rules.rs`.
+- **Routing engine & subcommands** — every condition type, unified/split tables, bypass, composite profiles, failover, global filter, `validate` / `test-route` (including `bypass_mitm` / `--mitm-bypass-host` output). Start: `routing_rules.rs`.
 - **Routed inbound engines** — HTTP forward, HTTPS `CONNECT`, SOCKS4/4a/5 to mock upstreams, failover, filter denial, log route fields. Start: `socks_proxy.rs`.
 - **Upstream dialers** — dialers against mock HTTP / SOCKS proxies, remote DNS. Start: `upstream_proxies.rs`.
 - **Listener layout & multiplexing** — single-port mux, separate listeners, port `0` disabling. Start: `mux_port.rs`.

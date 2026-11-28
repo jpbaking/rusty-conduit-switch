@@ -59,6 +59,7 @@ environment variables accept `true`/`false`, `yes`/`no`, `on`/`off`, and `1`/`0`
 | `--mitm-cert-ttl <DURATION>` | `RUSTY_CONDUIT_SWITCH_MITM_CERT_TTL` | `mitm.cert_ttl` | `1h` | No | In-memory TTL for generated MITM leaf certificates (minimum `10s`) |
 | `--mitm-cert-cache-max-entries <N>` | `RUSTY_CONDUIT_SWITCH_MITM_CERT_CACHE_MAX_ENTRIES` | `mitm.cert_cache_max_entries` | `10240` | No | Maximum cached MITM leaf certificates (`0` = unlimited) |
 | `--mitm-insecure-host <RULE>` | `RUSTY_CONDUIT_SWITCH_MITM_INSECURE_HOST` | `mitm.insecure_hosts` | *(none)* | No | Under MITM, accept invalid/self-signed upstream TLS certs for matching destinations (IP, CIDR, FQDN, or `*.domain`; same syntax as `--allow`); repeatable or comma-separated; CLI/env replaces the TOML list; an invalid rule is fatal |
+| `--mitm-bypass-host <RULE>` | `RUSTY_CONDUIT_SWITCH_MITM_BYPASS_HOST` | `mitm.bypass_hosts` | *(none)* | No | With MITM on, never intercept matching destinations (IP, CIDR, FQDN, or `*.domain`; same syntax as `--allow`): they get an opaque `CONNECT` tunnel; repeatable or comma-separated; CLI/env replaces the TOML list; an invalid rule is fatal |
 | `--mitm-insecure` | `RUSTY_CONDUIT_SWITCH_MITM_INSECURE` | `mitm.insecure` | `false` | No | **Unsafe** blind trust: skip upstream TLS certificate verification for ALL MITM targets; enabled if set in CLI/env **or** TOML; takes precedence over `--mitm-insecure-host` |
 | `--socks-block-web` | `RUSTY_CONDUIT_SWITCH_SOCKS_BLOCK_WEB` | `socks_block_web` | `false` | No | Reject HTTP/HTTPS traffic over SOCKS4/4a/5 (works with or without MITM) |
 | `--error-page <PATH>` | `RUSTY_CONDUIT_SWITCH_ERROR_PAGE` | `error_page` | *(built-in page)* | No | HTML template for proxy-generated HTTP error pages (placeholders `{{status}}`, `{{reason}}`, `{{message}}`, `{{target}}`); upstream responses are never altered ([section 13](#13-custom-proxy-error-pages)) |
@@ -106,6 +107,11 @@ to drain.
 **Exit codes.** `0` on a clean shutdown or a successful subcommand, `1` on a fatal startup
 error (invalid configuration, unreadable CA or `--error-page` file, port already in use) or a failed subcommand, and
 `2` for a command-line usage error.
+
+**Version.** `--version` prints the release tag without its leading `v`, pre-release suffix
+included (for example `rusty-conduit-switch 2.3.0` or `2.3.0-beta.1`). Builds made outside the
+release pipeline report `<Cargo version>-dev`, such as `2.3.0-dev`; set
+`CONDUIT_RELEASE_VERSION` at compile time to override it.
 
 ---
 
@@ -158,6 +164,8 @@ target=10.1.2.3:443 inbound=http table=[routing] rule=rfc1918-to-corp profile=co
   tunnel. In both cases URL rules are not evaluated and a `note:` line says so.
 - `profile=` shows how the target was resolved: `corp`, `corp(bypass->direct)` when the
   profile's bypass list matched, or `split->split_http` for a composite profile.
+- `bypass_mitm=true` is appended when the matched rule sets `bypass_mitm = true`. With MITM
+  on, an HTTP-inbound target matching `--mitm-bypass-host` gets a `note:` line instead.
 - No DNS lookup happens unless a rule opts in with `resolve_dns = true`.
 - A target rejected by the global filter prints `status=denied_by_filter`.
 
@@ -205,6 +213,8 @@ cert_ttl = "1h"
 cert_cache_max_entries = 10240
 # Skip upstream TLS verification only for these lab / self-signed origins:
 # insecure_hosts = ["dev.internal", "*.lab.example", "10.20.0.0/16"]
+# Never intercept these (certificate-pinned apps, banking): opaque CONNECT tunnel instead:
+# bypass_hosts = ["*.bank.example", "pinned.example", "203.0.113.0/24"]
 # UNSAFE: skip upstream TLS verification for every destination:
 # insecure = false
 
@@ -341,6 +351,7 @@ resolution as `profile=split->web_proxy`.
 | `match_all` | `true` | Matches everything (AirSwitch `TrueCondition`) |
 | `disabled` | `true` | The rule never matches; kept for reference |
 | `resolve_dns` | `true` | Per-rule override of `[routing].resolve_dns` for `cidr` / `ip` |
+| `bypass_mitm` | `true` | *(action, default `false`)* With MITM on, matching HTTPS `CONNECT` tunnels are not intercepted: they get an opaque tunnel through the rule's `target`. Reloads live with the routing table |
 | `target` | `"corp"` or `["corp", "direct"]` | Profile or failover chain (required) |
 
 A rule must have at least one condition, `match_all = true`, or `disabled = true`.
@@ -435,7 +446,8 @@ started with, and fully validates the result (including self-loops) before anyth
 `tcp_keepalive_interval`, and `tcp_keepalive_retries`.
 
 **Need a restart:** `bind`, `http_port`, `socks_port`, `max_connections`, `watch_config`,
-`watch_debounce`, `mitm.*` (including `mitm.insecure` and `mitm.insecure_hosts`), `socks_block_web`,
+`watch_debounce`, `mitm.*` (including `mitm.insecure`, `mitm.insecure_hosts`, and
+`mitm.bypass_hosts`), `socks_block_web`,
 `error_page`, and `logging.*`. If one of these changes, the reload still applies
 the live sections and logs which fields were ignored until restart.
 
@@ -528,6 +540,12 @@ rusty-conduit-switch --config config.toml --mitm-ca-cert ca.pem --mitm-ca-key ca
   - `--mitm-insecure` accepts any upstream cert for every target (blind trust). Use it only on
     isolated test networks: anyone on the path to the origin can impersonate it.
   - While MITM is enabled, either mode logs a `WARN:` line at startup and in `validate` output.
+- Exclusions: a `CONNECT` whose target matches `--mitm-bypass-host <RULE>` (TOML
+  `[mitm] bypass_hosts`; exact domain, `*.domain`, IP, or CIDR) or whose matched routing rule
+  sets `bypass_mitm = true` is not intercepted. It gets an opaque tunnel through the routed
+  upstream, so certificate-pinned clients keep working and URL rules do not see it. The
+  startup `config:` line shows `mitm_bypass_hosts=N`; the host list needs a restart, the
+  rule flag reloads live.
 - Leaf certificates are ECDSA P-256, valid from 5 minutes before signing until
   `--mitm-cert-ttl` + 5 minutes. They are cached in memory only, up to
   `--mitm-cert-cache-max-entries` entries.

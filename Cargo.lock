@@ -1427,8 +1427,8 @@ checksum = "cf54715a573b99ac80df0bc206da022bcd442c974952c7b9720069370852e21f"
 
 [[package]]
 name = "rusty-conduit-engine"
-version = "0.5.1"
-source = "git+https://github.com/jpbaking/rusty-conduit-engine?tag=v0.5.1#420cf307139a538025b69764c112c8ff36a76b4b"
+version = "0.6.0"
+source = "git+https://github.com/jpbaking/rusty-conduit-engine?tag=v0.6.0#274dbdd4590f2a65f9df0fa182acc86df98782cf"
 dependencies = [
  "arc-swap",
  "base64 0.22.1",
@@ -1458,7 +1458,7 @@ dependencies = [
 
 [[package]]
 name = "rusty-conduit-switch"
-version = "2.2.1"
+version = "2.3.0"
 dependencies = [
  "base64 0.22.1",
  "bytes",
@@ -1984,7 +1984,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.48.0",
 ]
 
 [[package]]

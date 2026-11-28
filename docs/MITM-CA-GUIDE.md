@@ -193,6 +193,12 @@ contains URL rules, every decrypted request is routed separately, and requests o
 client connection may go through different upstreams. Without URL rules, the route is chosen
 once per tunnel from the host name and port. See the [Advanced User Guide](USER-GUIDE-ADVANCED.md#5-routing-rules).
 
+To leave some HTTPS destinations uninspected, such as certificate-pinned apps or banking
+sites, list them with `--mitm-bypass-host <RULE>` (TOML `[mitm] bypass_hosts`; host, `*.domain`,
+IP, or CIDR), or set `bypass_mitm = true` on a `[[routing.rules]]` entry. Matching `CONNECT`
+tunnels are relayed opaquely through the routed upstream, so clients never see the proxy CA
+there. The host list is read at startup; the rule flag reloads with the routing table.
+
 SOCKS connections are never intercepted; they stay transparent TCP tunnels. Start the server
 with `--socks-block-web` (or `socks_block_web = true`) to reject HTTP and
 TLS web traffic over SOCKS, so clients cannot bypass inspection that way.

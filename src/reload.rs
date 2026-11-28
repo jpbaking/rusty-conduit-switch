@@ -88,6 +88,10 @@ pub fn non_reloadable_changes(active: &Config, new: &Config) -> Vec<&'static str
         active.mitm_insecure_hosts != new.mitm_insecure_hosts,
         "mitm.insecure_hosts",
     );
+    check(
+        active.mitm_bypass_hosts != new.mitm_bypass_hosts,
+        "mitm.bypass_hosts",
+    );
     check(active.mitm_insecure != new.mitm_insecure, "mitm.insecure");
     check(
         active.socks_block_web != new.socks_block_web,
@@ -123,6 +127,7 @@ pub fn pin_non_reloadable(active: &Config, new: Config) -> Config {
         mitm_cert_ttl: active.mitm_cert_ttl,
         mitm_cert_cache_max: active.mitm_cert_cache_max,
         mitm_insecure_hosts: active.mitm_insecure_hosts.clone(),
+        mitm_bypass_hosts: active.mitm_bypass_hosts.clone(),
         mitm_insecure: active.mitm_insecure,
         socks_block_web: active.socks_block_web,
         error_page: active.error_page.clone(),
@@ -720,5 +725,36 @@ mod tests {
             r.reload_once(ReloadTrigger::Manual),
             Err(ReloadError::NoConfigPath)
         ));
+    }
+
+    #[test]
+    fn mitm_bypass_hosts_change_requires_restart() {
+        let (r, path, cap) = reloader("mitm-bypass", BASE, &[]);
+        std::fs::write(
+            &path,
+            format!("{BASE}[mitm]\nbypass_hosts = [\"bank.example\"]\n"),
+        )
+        .unwrap();
+        let s = r.reload_once(ReloadTrigger::Manual).unwrap();
+        assert_eq!(s.ignored, vec!["mitm.bypass_hosts"]);
+        assert!(
+            cap.text()
+                .contains("ignored until restart: mitm.bypass_hosts"),
+            "{}",
+            cap.text()
+        );
+        // Pinned: the running config keeps an empty bypass list.
+        let active = r.active.lock().unwrap();
+        assert!(active.mitm_bypass_hosts.is_empty());
+    }
+
+    #[test]
+    fn routing_rule_bypass_mitm_hot_reloads() {
+        let (r, path, _cap) = reloader("rule-bypass-mitm", BASE, &[]);
+        std::fs::write(&path, format!("{BASE}bypass_mitm = true\n")).unwrap();
+        let s = r.reload_once(ReloadTrigger::Manual).unwrap();
+        assert!(s.ignored.is_empty(), "{:?}", s.ignored);
+        let active = r.active.lock().unwrap();
+        assert!(active.routing.rules[0].bypass_mitm);
     }
 }

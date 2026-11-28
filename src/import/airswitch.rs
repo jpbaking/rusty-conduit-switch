@@ -327,6 +327,7 @@ fn empty_rule() -> RuleConfig {
         port: None,
         host_levels: None,
         bypass: None,
+        bypass_mitm: false,
         weekday: None,
         time: None,
         url_wildcard: None,

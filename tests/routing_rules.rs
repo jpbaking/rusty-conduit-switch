@@ -887,6 +887,36 @@ fn cmd_test_route_prints_decisions() {
 }
 
 #[test]
+fn cmd_test_route_shows_mitm_bypass() {
+    let f = TempFile::new(
+        "test-route-bypass-mitm",
+        "[mitm]\nca_p12 = \"/nonexistent/ca.p12\"\nbypass_hosts = [\"*.pinned.example\"]\n\
+         [[routing.rules]]\nname = \"bank\"\nhost = \"bank.example\"\ntarget = \"direct\"\n\
+         bypass_mitm = true\n",
+    );
+    // Rule-level bypass_mitm is shown only when true.
+    let (code, out, err) = test_route(f.path(), Inbound::Http, "bank.example:443");
+    assert_eq!(code, 0, "{err}");
+    assert!(
+        out.contains("rule=bank profile=direct chain=direct upstream=direct bypass_mitm=true"),
+        "{out}"
+    );
+    let (_, out, _) = test_route(f.path(), Inbound::Http, "other.example:443");
+    assert!(!out.contains("bypass_mitm"), "{out}");
+    assert!(!out.contains("--mitm-bypass-host"), "{out}");
+
+    // [mitm].bypass_hosts match is reported as a note for HTTP inbound only.
+    let (_, out, _) = test_route(f.path(), Inbound::Http, "api.pinned.example:443");
+    assert!(!out.contains("bypass_mitm=true"), "{out}");
+    assert!(
+        out.contains("note: destination matches --mitm-bypass-host"),
+        "{out}"
+    );
+    let (_, out, _) = test_route(f.path(), Inbound::Socks, "api.pinned.example:443");
+    assert!(!out.contains("--mitm-bypass-host"), "{out}");
+}
+
+#[test]
 fn cmd_validate_checks_the_files_it_names_unless_settings_only() {
     let profile =
         "[profiles.corp]\ntype = \"http\"\nhost = \"10.0.0.2\"\nport = 3128\nusername = \"a\"\n";

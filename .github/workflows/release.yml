@@ -74,8 +74,26 @@ jobs:
         with:
           key: release-${{ matrix.pkg }}
 
-      - name: Build release binary
-        run: cargo build --release --locked --target ${{ matrix.target }}
+      # `--version` reports the tag (leading `v` stripped, pre-release suffix kept) via the
+      # compile-time CONDUIT_RELEASE_VERSION; local builds report `<Cargo version>-dev`.
+      - name: Build release binary (Unix)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          export CONDUIT_RELEASE_VERSION="${GITHUB_REF_NAME#v}"
+          echo "CONDUIT_RELEASE_VERSION=${CONDUIT_RELEASE_VERSION}"
+          cargo build --release --locked --target ${{ matrix.target }}
+
+      - name: Build release binary (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $env:CONDUIT_RELEASE_VERSION = $env:GITHUB_REF_NAME -replace '^v', ''
+          Write-Host "CONDUIT_RELEASE_VERSION=$env:CONDUIT_RELEASE_VERSION"
+          cargo build --release --locked --target ${{ matrix.target }}
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Package archive (Unix)
         if: matrix.archive == 'tar.gz'

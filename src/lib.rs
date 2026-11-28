@@ -451,14 +451,25 @@ pub fn cmd_test_route(
                 .and_then(|t| router.profile(&t.profile))
                 .map(|p| p.redacted_upstream())
                 .unwrap_or_default();
+            let bypass = if d.bypass_mitm {
+                " bypass_mitm=true"
+            } else {
+                ""
+            };
             let _ = writeln!(
                 out,
-                "target={shown} inbound={inbound} table={} rule={} profile={} chain={} upstream={upstream}",
+                "target={shown} inbound={inbound} table={} rule={} profile={} chain={} upstream={upstream}{bypass}",
                 d.table,
                 quote_if_needed(d.rule_label()),
                 d.profile_label(),
                 d.chain_label(),
             );
+            if inbound == Inbound::Http
+                && cfg.mitm_enabled()
+                && cfg.mitm_bypass_matches(&parsed.host)
+            {
+                notes.push("destination matches --mitm-bypass-host: HTTPS is tunneled opaquely, not intercepted");
+            }
         }
         Err(denied) => {
             let _ = writeln!(

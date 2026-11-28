@@ -100,6 +100,8 @@ pub enum ConfigError {
     InvalidKeepalive(String),
     #[error("invalid --mitm-insecure-host rule {rule:?}: {message}")]
     InvalidMitmInsecureHost { rule: String, message: String },
+    #[error("invalid --mitm-bypass-host rule {rule:?}: {message}")]
+    InvalidMitmBypassHost { rule: String, message: String },
     #[error("--connect-timeout must be greater than 0")]
     ZeroConnectTimeout,
     #[error("invalid profile `{profile}`: {message}")]
@@ -202,11 +204,21 @@ pub enum Command {
     },
 }
 
+/// Version reported by `--version`: the release tag (without its leading `v`, pre-release
+/// suffix included) when built with `CONDUIT_RELEASE_VERSION` set, else
+/// `<CARGO_PKG_VERSION>-dev` for local and non-release builds.
+pub fn app_version() -> &'static str {
+    match option_env!("CONDUIT_RELEASE_VERSION") {
+        Some(version) if !version.is_empty() => version,
+        _ => concat!(env!("CARGO_PKG_VERSION"), "-dev"),
+    }
+}
+
 /// Raw command-line / environment input (`clap` derive with `env` fallbacks).
 #[derive(Debug, Clone, Default, Parser)]
 #[command(
     name = "rusty-conduit-switch",
-    version,
+    version = app_version(),
     about = "Lightweight HTTP/HTTPS and SOCKS4/4a/5 Auto Switch proxy server with optional HTTPS MITM inspection",
     long_about = "Lightweight HTTP/HTTPS and SOCKS4/4a/5 Auto Switch proxy server with optional HTTPS MITM inspection.\n\n\
                   Precedence: CLI flags > RUSTY_CONDUIT_SWITCH_* environment variables > --config TOML file > defaults."
@@ -385,6 +397,16 @@ pub struct CliArgs {
         env = "RUSTY_CONDUIT_SWITCH_MITM_INSECURE_HOST"
     )]
     pub mitm_insecure_host: Vec<String>,
+
+    /// Never intercept TLS for matching destinations (IP, CIDR, FQDN, or *.domain): they are
+    /// tunneled opaquely even with MITM enabled; repeatable or comma-separated
+    #[arg(
+        long = "mitm-bypass-host",
+        value_name = "RULE",
+        value_delimiter = ',',
+        env = "RUSTY_CONDUIT_SWITCH_MITM_BYPASS_HOST"
+    )]
+    pub mitm_bypass_host: Vec<String>,
 
     /// UNSAFE blind trust: skip upstream TLS certificate verification for ALL MITM targets
     #[arg(
@@ -582,6 +604,9 @@ pub struct FileMitmConfig {
     /// Destinations (IP, CIDR, FQDN, or `*.domain`) whose upstream TLS certificates are not verified.
     #[serde(default)]
     pub insecure_hosts: Vec<String>,
+    /// Destinations (IP, CIDR, FQDN, or `*.domain`) tunneled opaquely instead of intercepted.
+    #[serde(default)]
+    pub bypass_hosts: Vec<String>,
     /// Blind trust: skip upstream TLS certificate verification for every MITM target (unsafe).
     pub insecure: Option<bool>,
 }
@@ -682,6 +707,9 @@ pub struct Config {
     /// Upstream TLS verification is skipped for MITM targets matching these rules
     /// (`FilterRule` syntax; checked by [`Config::validate`]).
     pub mitm_insecure_hosts: Vec<String>,
+    /// MITM is never applied to targets matching these rules: they are tunneled opaquely
+    /// (`FilterRule` syntax; checked by [`Config::validate`]).
+    pub mitm_bypass_hosts: Vec<String>,
     /// Blind trust: upstream TLS verification is skipped for every MITM target.
     pub mitm_insecure: bool,
     pub socks_block_web: bool,
@@ -728,6 +756,7 @@ impl fmt::Debug for Config {
             .field("mitm_cert_ttl", &self.mitm_cert_ttl)
             .field("mitm_cert_cache_max", &self.mitm_cert_cache_max)
             .field("mitm_insecure_hosts", &self.mitm_insecure_hosts)
+            .field("mitm_bypass_hosts", &self.mitm_bypass_hosts)
             .field("mitm_insecure", &self.mitm_insecure)
             .field("socks_block_web", &self.socks_block_web)
             .field("error_page", &self.error_page)
@@ -767,6 +796,7 @@ impl Default for Config {
             mitm_cert_ttl: DEFAULT_MITM_CERT_TTL,
             mitm_cert_cache_max: DEFAULT_MITM_CERT_CACHE_MAX_ENTRIES,
             mitm_insecure_hosts: Vec::new(),
+            mitm_bypass_hosts: Vec::new(),
             mitm_insecure: false,
             socks_block_web: false,
             error_page: None,
@@ -858,6 +888,11 @@ impl Config {
         } else {
             a.mitm_insecure_host
         };
+        let mitm_bypass_hosts = if a.mitm_bypass_host.is_empty() {
+            file.mitm.bypass_hosts
+        } else {
+            a.mitm_bypass_host
+        };
         let mitm_insecure = a.mitm_insecure || file.mitm.insecure.unwrap_or(false);
         let mut deprecations = cli.deprecated;
         if used_keepalive_table {
@@ -923,6 +958,7 @@ impl Config {
                 .or(file.mitm.cert_cache_max)
                 .unwrap_or(d.mitm_cert_cache_max),
             mitm_insecure_hosts,
+            mitm_bypass_hosts,
             mitm_insecure,
             socks_block_web,
             error_page: a.error_page.or(file.error_page),
@@ -962,6 +998,7 @@ impl Config {
             return Err(ConfigError::CertTtlTooShort(self.mitm_cert_ttl));
         }
         self.mitm_insecure_rules()?;
+        self.mitm_bypass_rules()?;
         if self.connect_timeout.is_zero() {
             return Err(ConfigError::ZeroConnectTimeout);
         }
@@ -1006,6 +1043,37 @@ impl Config {
             .collect()
     }
 
+    /// Parse `mitm_bypass_hosts` into filter rules; the first invalid rule is an error.
+    pub fn mitm_bypass_rules(&self) -> Result<Vec<FilterRule>, ConfigError> {
+        self.mitm_bypass_hosts
+            .iter()
+            .map(|rule| {
+                rule.parse::<FilterRule>()
+                    .map_err(|message| ConfigError::InvalidMitmBypassHost {
+                        rule: rule.clone(),
+                        message,
+                    })
+            })
+            .collect()
+    }
+
+    /// Whether `host` (hostname or IP literal, brackets optional) matches a valid
+    /// `mitm_bypass_hosts` rule, mirroring the engine's `MitmInterceptor::should_bypass`.
+    pub fn mitm_bypass_matches(&self, host: &str) -> bool {
+        let host = host
+            .strip_prefix('[')
+            .and_then(|h| h.strip_suffix(']'))
+            .unwrap_or(host);
+        let ip = host.parse::<IpAddr>().ok();
+        self.mitm_bypass_hosts
+            .iter()
+            .filter_map(|rule| rule.parse::<FilterRule>().ok())
+            .any(|rule| match ip {
+                Some(ip) => rule.matches_ip(ip),
+                None => rule.matches_domain(host),
+            })
+    }
+
     /// Upstream TLS verification mode: blind trust wins over the host list, else strict.
     ///
     /// Invalid host rules are rejected by [`Config::validate`]; any left on an unvalidated
@@ -1025,8 +1093,11 @@ impl Config {
         }
     }
 
-    /// MITM settings (CA source, passphrase sources, leaf TTL, cache cap, upstream TLS),
-    /// independent of how this configuration was loaded.
+    /// MITM settings (CA source, passphrase sources, leaf TTL, cache cap, upstream TLS,
+    /// bypass hosts), independent of how this configuration was loaded.
+    ///
+    /// Invalid bypass rules are rejected by [`Config::validate`]; any left on an unvalidated
+    /// config are skipped here.
     pub fn mitm_options(&self) -> MitmOptions {
         MitmOptions {
             ca: self.ca_source(),
@@ -1035,6 +1106,11 @@ impl Config {
             cert_ttl: self.mitm_cert_ttl,
             cert_cache_max: self.mitm_cert_cache_max,
             upstream_tls: self.upstream_tls(),
+            bypass_hosts: self
+                .mitm_bypass_hosts
+                .iter()
+                .filter_map(|rule| rule.parse::<FilterRule>().ok())
+                .collect(),
         }
     }
 
@@ -1258,7 +1334,7 @@ impl Config {
         format!(
             "bind={} http_port={} socks_port={} multiplexed={} max_connections={} \
              connect_timeout={} tcp_keepalive={keepalive} mitm={mitm} mitm_cert_ttl={} \
-             mitm_cert_cache_max_entries={} mitm_upstream_tls={upstream_tls} socks_block_web={} error_page={} log_level={} \
+             mitm_cert_cache_max_entries={} mitm_upstream_tls={upstream_tls} mitm_bypass_hosts={} socks_block_web={} error_page={} log_level={} \
              log_format={} \
              http_access_log={} socks_log={} profiles={} rules={} watch_config={} config={}{filter}",
             self.bind,
@@ -1269,6 +1345,7 @@ impl Config {
             humantime::format_duration(self.connect_timeout),
             humantime::format_duration(self.mitm_cert_ttl),
             cap(self.mitm_cert_cache_max),
+            self.mitm_bypass_hosts.len(),
             self.socks_block_web,
             self.error_page
                 .as_ref()
@@ -2475,5 +2552,143 @@ target = "direct"
             err.starts_with(&format!("cannot read --error-page {}", missing.display())),
             "{err}"
         );
+    }
+
+    // ---- MITM bypass hosts ----
+
+    #[test]
+    fn mitm_bypass_cli_flags_and_env() {
+        let _env = EnvGuard::new(&[]);
+        let cfg = load(&[]).unwrap();
+        assert!(cfg.mitm_bypass_hosts.is_empty());
+        assert!(cfg.mitm_options().bypass_hosts.is_empty());
+
+        let cfg = load(&[
+            "--mitm-bypass-host",
+            "bank.example",
+            "--mitm-bypass-host",
+            "10.0.0.0/8,*.pinned.example",
+        ])
+        .unwrap();
+        assert_eq!(
+            cfg.mitm_bypass_hosts,
+            vec!["bank.example", "10.0.0.0/8", "*.pinned.example"]
+        );
+        // Independent of the insecure list.
+        assert!(cfg.mitm_insecure_hosts.is_empty());
+        drop(_env);
+
+        let _env = EnvGuard::new(&[(
+            "RUSTY_CONDUIT_SWITCH_MITM_BYPASS_HOST",
+            "env.example,192.0.2.7",
+        )]);
+        let cfg = load(&[]).unwrap();
+        assert_eq!(cfg.mitm_bypass_hosts, vec!["env.example", "192.0.2.7"]);
+        // CLI hosts replace the env list.
+        let cfg = load(&["--mitm-bypass-host", "cli.example"]).unwrap();
+        assert_eq!(cfg.mitm_bypass_hosts, vec!["cli.example"]);
+    }
+
+    #[test]
+    fn mitm_bypass_toml_and_precedence() {
+        let _env = EnvGuard::new(&[]);
+        let path = temp_file(
+            "[mitm]\nbypass_hosts = [\"file.example\", \"*.bank.example\", \"172.16.0.0/12\"]\n",
+        );
+        let p = path.to_str().unwrap();
+        let cfg = load(&["--config", p]).unwrap();
+        assert_eq!(
+            cfg.mitm_bypass_hosts,
+            vec!["file.example", "*.bank.example", "172.16.0.0/12"]
+        );
+
+        // A non-empty CLI list replaces the file list.
+        let cfg = load(&["--config", p, "--mitm-bypass-host", "cli.example"]).unwrap();
+        assert_eq!(cfg.mitm_bypass_hosts, vec!["cli.example"]);
+        let _ = fs::remove_file(&path);
+
+        let file = FileConfig::from_toml_str("[mitm]\n", Path::new("x.toml")).unwrap();
+        assert!(file.mitm.bypass_hosts.is_empty());
+    }
+
+    #[test]
+    fn mitm_bypass_invalid_rule_is_fatal() {
+        let _env = EnvGuard::new(&[]);
+        let err = load(&["--mitm-bypass-host", "10.0.0.0/99"]).unwrap_err();
+        assert!(
+            matches!(&err, ConfigError::InvalidMitmBypassHost { rule, .. } if rule == "10.0.0.0/99"),
+            "{err}"
+        );
+        assert!(err.to_string().contains("--mitm-bypass-host"), "{err}");
+
+        let err =
+            from_toml("[mitm]\nbypass_hosts = [\"ok.example\", \"bad host!\"]\n").unwrap_err();
+        assert!(
+            matches!(&err, ConfigError::InvalidMitmBypassHost { rule, .. } if rule == "bad host!"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn mitm_bypass_options_summary_and_debug() {
+        let cfg = Config::default();
+        assert!(cfg.summary().contains("mitm_bypass_hosts=0"));
+
+        let cfg = Config {
+            mitm_bypass_hosts: vec!["bank.example".into(), "10.0.0.0/8".into()],
+            ..Config::default()
+        };
+        assert_eq!(
+            cfg.mitm_options().bypass_hosts,
+            rules(&["bank.example", "10.0.0.0/8"])
+        );
+        assert!(
+            cfg.summary().contains("mitm_bypass_hosts=2"),
+            "{}",
+            cfg.summary()
+        );
+        assert!(format!("{cfg:?}").contains("mitm_bypass_hosts: [\"bank.example\""));
+
+        assert!(cfg.mitm_bypass_matches("bank.example"));
+        assert!(cfg.mitm_bypass_matches("10.2.3.4"));
+        assert!(!cfg.mitm_bypass_matches("other.example"));
+        assert!(!cfg.mitm_bypass_matches("192.0.2.1"));
+
+        let cfg = Config {
+            mitm_bypass_hosts: vec!["*.bank.example".into(), "2001:db8::/32".into()],
+            ..Config::default()
+        };
+        assert!(cfg.mitm_bypass_matches("www.bank.example"));
+        assert!(cfg.mitm_bypass_matches("[2001:db8::1]"));
+        assert!(!cfg.mitm_bypass_matches("[2001:db9::1]"));
+    }
+
+    #[test]
+    fn routing_rule_bypass_mitm_toml() {
+        let _env = EnvGuard::new(&[]);
+        let cfg = from_toml(
+            "[[routing.rules]]\nhost = \"bank.example\"\ntarget = \"direct\"\nbypass_mitm = true\n\
+             [[routing.rules]]\nhost = \"other.example\"\ntarget = \"direct\"\n",
+        )
+        .unwrap();
+        assert!(cfg.routing.rules[0].bypass_mitm);
+        // Off by default.
+        assert!(!cfg.routing.rules[1].bypass_mitm);
+    }
+
+    // ---- --version ----
+
+    #[test]
+    fn app_version_is_release_tag_or_dev() {
+        let v = app_version();
+        match option_env!("CONDUIT_RELEASE_VERSION") {
+            Some(tag) if !tag.is_empty() => assert_eq!(v, tag),
+            _ => assert_eq!(v, concat!(env!("CARGO_PKG_VERSION"), "-dev")),
+        }
+        assert!(!v.starts_with('v'), "{v}");
+
+        let err = CliInput::try_parse_from(["rusty-conduit-switch", "--version"]).unwrap_err();
+        assert_eq!(err.kind(), clap::error::ErrorKind::DisplayVersion);
+        assert_eq!(err.to_string().trim(), format!("rusty-conduit-switch {v}"));
     }
 }
