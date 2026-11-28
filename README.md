@@ -5,6 +5,11 @@
 [![Release](https://img.shields.io/github/v/release/jpbaking/rusty-conduit-switch)](https://github.com/jpbaking/rusty-conduit-switch/releases)
 [![License](https://img.shields.io/badge/license-BSD--3--Clause-blue.svg)](LICENSE)
 
+> [!IMPORTANT]
+> **For development, testing, labs, and homelabs.** These tools are well tested and built
+> with care, but nothing here is promised to be production-ready, and the proxies have **no
+> inbound authentication**. Keep them on loopback or a private network you control.
+
 ---
 
 ## Why rusty-conduit-switch?
